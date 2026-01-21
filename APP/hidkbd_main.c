@@ -13,6 +13,18 @@
 #include "debug.h"
 
 // ===================================================================
+// ? LED 引脚定义 (手动杜邦线连接版)
+// ===================================================================
+#define LED1_PIN   GPIO_Pin_4   // PB4 -> 连杜邦线到 LED1
+#define LED2_PIN   GPIO_Pin_7   // PB7 -> 连杜邦线到 LED2
+
+// 辅助宏: 低电平点亮
+#define LED1_ON()  GPIOB_ResetBits(LED1_PIN)
+#define LED1_OFF() GPIOB_SetBits(LED1_PIN)
+#define LED2_ON()  GPIOB_ResetBits(LED2_PIN)
+#define LED2_OFF() GPIOB_SetBits(LED2_PIN)
+
+// ===================================================================
 // ? 外部函数与全局变量
 // ===================================================================
 // 引用 usb_bridge.c 中的核心函数
@@ -69,19 +81,30 @@ int main(void)
 #endif
     
     // 设置系统主频为 60MHz (平衡性能与功耗的最佳点)
-    SetSysClock(CLK_SOURCE_PLL_60MHz);
+    SetSysClock(CLK_SOURCE_PLL_48MHz);
 
+    // --------------------------------------------------------
+    // ? LED 硬件初始化
+    // --------------------------------------------------------
+    // 配置 PB4 和 PB7 为推挽输出
+    GPIOB_ModeCfg(LED1_PIN | LED2_PIN, GPIO_ModeOut_PP_5mA);
+    
+    // 默认全灭 (置高)
+    LED1_OFF();
+    LED2_OFF();
+    // --------------------------------------------------------
+          
     // ----------------------------------------------------------------
     // 2. 调试接口初始化
     // ----------------------------------------------------------------
-#ifdef DEBUG
+#ifdef DEBUG_ENABLED
     // 只有在定义了 DEBUG 宏时才编译这部分代码
-    GPIOA_SetBits(bTXD1);                       // 串口 TX 拉高
-    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);  // 推挽输出
-    UART1_DefInit();                            // 默认波特率 115200
+    GPIOA_SetBits(bTXD1);
+    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);
+    UART1_DefInit();
 #endif
     LOG_SYS("--------------------------------\n");
-    LOG_SYS("NiZ Wireless Adapter V9.0 Start\n");
+    LOG_SYS("ENJOU Wireless Adapter Start\n");
     LOG_SYS("Build Date: %s\n", __DATE__);
     LOG_SYS("--------------------------------\n");
 
@@ -114,6 +137,11 @@ int main(void)
     PRINT("Watchdog: ENABLED (Timeout ~1.6s)\n");
     #endif
 #endif
+
+    // --------------------------------------------------------
+    // ? 系统启动成功：点亮 LED1 (PB4)
+    // --------------------------------------------------------
+    LED1_ON(); 
 
     // ----------------------------------------------------------------
     // 6. 跳转至主循环

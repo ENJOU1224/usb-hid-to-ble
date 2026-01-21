@@ -160,10 +160,7 @@
 						"preprocess_only": false,
 						"defined_symbols": [
 							"DCDC_ENABLE=1",
-							"DEBUG_SYS=1",
-							"DEBUG_BLE=1",
-							"DEBUG=1",
-							"DEBUG_BATT=1"
+							"ENABLE_WATCHDOG=1"
 						],
 						"undefined_symbols": []
 					},

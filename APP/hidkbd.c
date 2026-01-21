@@ -11,6 +11,11 @@
 #include "hidkbd.h"
 #include "debug.h" // 确保包含 PRINT 定义
 
+// ? 更新 LED2 定义：PB7
+#define LED2_PIN   GPIO_Pin_7
+#define LED2_ON()  GPIOB_ResetBits(LED2_PIN)
+#define LED2_OFF() GPIOB_SetBits(LED2_PIN)
+
 // ===================================================================
 // ? 电量管理配置 (新增)
 // ===================================================================
@@ -289,6 +294,8 @@ static void hidEmuStateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
         case GAPROLE_ADVERTISING:
             if(pEvent->gap.opcode == GAP_MAKE_DISCOVERABLE_DONE_EVENT)
                 LOG_BLE("Advertising...\n");
+            // ? 广播中：熄灭 LED2
+            LED2_OFF();
             break;
 
         case GAPROLE_CONNECTED:
@@ -299,6 +306,9 @@ static void hidEmuStateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
                 tmos_start_task(hidEmuTaskId, START_PARAM_UPDATE_EVT, START_PARAM_UPDATE_EVT_DELAY);
                 LOG_BLE("BLE Connected!\n");
                 
+                // ? 连接成功：点亮 LED2 (PB7)
+                LED2_ON();
+
                 // ?【新增这行】强制重置上次电量记录
                 // 这样下一次测量时，代码会认为电量“变了”，从而强制发包给电脑
                 last_batt_percent = 0; 
@@ -315,7 +325,9 @@ static void hidEmuStateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
         case GAPROLE_WAITING:
             if(pEvent->gap.opcode == GAP_LINK_TERMINATED_EVENT)
                 LOG_BLE("Disconnected. Reason:%x\n", pEvent->linkTerminate.reason);
-                
+
+            // ? 断开连接：熄灭 LED2
+            LED2_OFF();
             // 断开后自动重新广播
             {
                 uint8_t initial_advertising_enable = TRUE;
