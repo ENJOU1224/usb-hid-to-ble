@@ -8,6 +8,7 @@
 
 #include "CH58xBLE_LIB.H"
 #include "CH58x_common.h"
+#include "debug.h"
 
 // ===================================================================
 // ? 用户配置区 (User Configuration)
@@ -40,19 +41,6 @@ volatile uint8_t Bridge_FoundNewDev = 0; // 标记是否有新设备插入
 uint8_t last_report[8] = {0};            // 缓存：记录上一次成功发给电脑的数据
 static uint8_t send_pending = 0;         // 标志位：1=蓝牙忙，数据待重发
 
-// --- 宏逻辑处理 (Macro Logic) ---
-// 如果开启了按键调试，则定义打印函数；否则定义为空宏(不占空间)
-#ifdef DEBUG
-    void Show_Current_Keys(uint8_t *report);
-    #define DBG_KEYS(r) Show_Current_Keys(r)
-    #define LOG_SYS(...) PRINT(__VA_ARGS__)
-#else
-    #define DBG_KEYS(r) do{}while(0) // 这是一个C语言技巧，表示“什么都不做”，会被编译器优化掉
-    #define LOG_SYS(...) do{}while(0)
-#endif
-
-
-
 // ===================================================================
 // ?? 核心功能函数实现
 // ===================================================================
@@ -78,9 +66,6 @@ void USB_Bridge_Init(void)
     send_pending = 0;
     
     LOG_SYS("USB2 Bridge Start. PA9 Power ON.\n");
-    #ifdef DEBUG
-        LOG_SYS("Debug Mode: ON (Keys will be printed)\n");
-    #endif
 }
 
 /**
@@ -148,7 +133,7 @@ void USB_Bridge_Poll(void)
     if (send_pending) {
         if (HidEmu_SendUSBReport(last_report) == SUCCESS) {
             send_pending = 0; // 发送成功，解除阻塞
-            // LOG_SYS("Resend OK\n");
+            LOG_SYS("Resend OK\n");
         } else {
             return; // 蓝牙还是忙，退出函数，下一轮循环继续重试
         }
@@ -163,11 +148,11 @@ void USB_Bridge_Poll(void)
         s = AnalyzeRootU2Hub();         // 分析是插入还是拔出
         if(s == ERR_USB_CONNECT) {
             Bridge_FoundNewDev = 1;
-            LOG_SYS("Event: Device Plugged In\n");
+            LOG_USB("Event: Device Plugged In\n");
         }
         else if (s == ERR_USB_DISCON) {
             Bridge_FoundNewDev = 0;
-            LOG_SYS("Event: Device Removed\n");
+            LOG_USB("Event: Device Removed\n");
         }
     }
     else if (R8_USB2_INT_FG) { 
@@ -182,8 +167,8 @@ void USB_Bridge_Poll(void)
         Bridge_FoundNewDev = 0;
         mDelaymS(200); // 等待电压稳定
         s = InitRootU2Device(); // 执行标准 USB 枚举
-        if(s == ERR_SUCCESS) LOG_SYS("Enum Success. Keyboard Ready.\n");
-        else LOG_SYS("Enum Failed: %02X\n", s);
+        if(s == ERR_SUCCESS) LOG_USB("Enum Success. Keyboard Ready.\n");
+        else LOG_USB("Enum Failed: %02X\n", s);
     }
 
     // 维护 HUB 下挂设备（虽然你还没用到 HUB）

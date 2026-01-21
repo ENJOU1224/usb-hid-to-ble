@@ -159,7 +159,11 @@
 						"do_not_search_system_directories": false,
 						"preprocess_only": false,
 						"defined_symbols": [
-							"DCDC_ENABLE=1"
+							"DCDC_ENABLE=1",
+							"DEBUG_SYS=1",
+							"DEBUG_BLE=1",
+							"DEBUG=1",
+							"DEBUG_BATT=1"
 						],
 						"undefined_symbols": []
 					},
@@ -178,7 +182,7 @@
 						"include_files": []
 					},
 					"optimization": {
-						"language_standard": "gnu99",
+						"language_standard": "gnu17",
 						"other_optimization_flags": ""
 					},
 					"warnings": {

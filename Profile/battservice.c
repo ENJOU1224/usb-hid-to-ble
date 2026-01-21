@@ -100,7 +100,6 @@ static uint8_t hidReportRefBattLevel[HID_REPORT_REF_LEN] = {
 /*********************************************************************
  * Profile Attributes - Table
  */
-
 static gattAttribute_t battAttrTbl[] = {
     // Battery Service
     {
@@ -147,7 +146,6 @@ static bStatus_t battReadAttrCB(uint16_t connHandle, gattAttribute_t *pAttr,
 static bStatus_t battWriteAttrCB(uint16_t connHandle, gattAttribute_t *pAttr,
                                  uint8_t *pValue, uint16_t len, uint16_t offset, uint8_t method);
 static void      battNotifyCB(linkDBItem_t *pLinkItem);
-static uint8_t   battMeasure(void);
 static void      battNotifyLevel(void);
 
 /*********************************************************************
@@ -219,15 +217,20 @@ extern void Batt_Register(battServiceCB_t pfnServiceCB)
 bStatus_t Batt_SetParameter(uint8_t param, uint8_t len, void *value)
 {
     bStatus_t ret = SUCCESS;
-
     switch(param)
     {
+        case BATT_PARAM_LEVEL:
+            // 更新内部变量
+            battLevel = *((uint8_t *)value);
+            
+            // ? 新增：数值改变了，马上通知电脑！
+            // 这样我们在 hidkbd.c 里算出真电量后，一调用这个函数，电脑就同步了
+            battNotifyLevel(); 
+            break;
+
         case BATT_PARAM_CRITICAL_LEVEL:
             battCriticalLevel = *((uint8_t *)value);
-
-            // If below the critical level and critical state not set, notify it
-            if(battLevel < battCriticalLevel)
-            {
+            if(battLevel < battCriticalLevel) {
                 battNotifyLevel();
             }
             break;
@@ -236,7 +239,6 @@ bStatus_t Batt_SetParameter(uint8_t param, uint8_t len, void *value)
             ret = INVALIDPARAMETER;
             break;
     }
-
     return (ret);
 }
 
@@ -304,20 +306,6 @@ bStatus_t Batt_GetParameter(uint8_t param, void *value)
  */
 bStatus_t Batt_MeasLevel(void)
 {
-    uint8_t level;
-
-    level = battMeasure();
-
-    // If level has gone down
-    if(level < battLevel)
-    {
-        // Update level
-        battLevel = level;
-
-        // Send a notification
-        battNotifyLevel();
-    }
-
     return SUCCESS;
 }
 
@@ -368,30 +356,17 @@ static bStatus_t battReadAttrCB(uint16_t connHandle, gattAttribute_t *pAttr,
     uint16_t  uuid;
     bStatus_t status = SUCCESS;
 
-    // Make sure it's not a blob operation (no attributes in the profile are long)
-    if(offset > 0)
-    {
-        return (ATT_ERR_ATTR_NOT_LONG);
-    }
+    if(offset > 0) return (ATT_ERR_ATTR_NOT_LONG);
 
     uuid = BUILD_UINT16(pAttr->type.uuid[0], pAttr->type.uuid[1]);
 
-    // Measure battery level if reading level
     if(uuid == BATT_LEVEL_UUID)
     {
-        uint8_t level;
-
-        level = battMeasure();
-
-        // If level has gone down
-        if(level < battLevel)
-        {
-            // Update level
-            battLevel = level;
-        }
-
+        // ? 原版代码这里调用了 battMeasure() 假测量
+        // 我们把它删掉！直接用我们存好的 battLevel
+        
         *pLen = 1;
-        pValue[0] = battLevel;
+        pValue[0] = battLevel; // 直接返回真实电量
     }
     else if(uuid == GATT_REPORT_REF_UUID)
     {
@@ -423,29 +398,18 @@ static bStatus_t battWriteAttrCB(uint16_t connHandle, gattAttribute_t *pAttr,
                                  uint8_t *pValue, uint16_t len, uint16_t offset, uint8_t method)
 {
     bStatus_t status = SUCCESS;
-
     uint16_t uuid = BUILD_UINT16(pAttr->type.uuid[0], pAttr->type.uuid[1]);
     switch(uuid)
     {
         case GATT_CLIENT_CHAR_CFG_UUID:
-            status = GATTServApp_ProcessCCCWriteReq(connHandle, pAttr, pValue, len,
-                                                    offset, GATT_CLIENT_CFG_NOTIFY);
-            if(status == SUCCESS)
-            {
+            status = GATTServApp_ProcessCCCWriteReq(connHandle, pAttr, pValue, len, offset, GATT_CLIENT_CFG_NOTIFY);
+            if(status == SUCCESS) {
                 uint16_t charCfg = BUILD_UINT16(pValue[0], pValue[1]);
-
-                if(battServiceCB)
-                {
-                    (*battServiceCB)((charCfg == GATT_CFG_NO_OPERATION) ? BATT_LEVEL_NOTI_DISABLED : BATT_LEVEL_NOTI_ENABLED);
-                }
+                if(battServiceCB) (*battServiceCB)((charCfg == GATT_CFG_NO_OPERATION) ? BATT_LEVEL_NOTI_DISABLED : BATT_LEVEL_NOTI_ENABLED);
             }
             break;
-
-        default:
-            status = ATT_ERR_ATTR_NOT_FOUND;
-            break;
+        default: status = ATT_ERR_ATTR_NOT_FOUND; break;
     }
-
     return (status);
 }
 
@@ -462,20 +426,16 @@ static void battNotifyCB(linkDBItem_t *pLinkItem)
 {
     if(pLinkItem->stateFlags & LINK_CONNECTED)
     {
-        uint16_t value = GATTServApp_ReadCharCfg(pLinkItem->connectionHandle,
-                                                 battLevelClientCharCfg);
+        uint16_t value = GATTServApp_ReadCharCfg(pLinkItem->connectionHandle, battLevelClientCharCfg);
         if(value & GATT_CLIENT_CFG_NOTIFY)
         {
             attHandleValueNoti_t noti;
-
-            noti.pValue = GATT_bm_alloc(pLinkItem->connectionHandle, ATT_HANDLE_VALUE_NOTI,
-                                        BATT_LEVEL_VALUE_LEN, NULL, 0);
+            noti.pValue = GATT_bm_alloc(pLinkItem->connectionHandle, ATT_HANDLE_VALUE_NOTI, BATT_LEVEL_VALUE_LEN, NULL, 0);
             if(noti.pValue != NULL)
             {
                 noti.handle = battAttrTbl[BATT_LEVEL_VALUE_IDX].handle;
                 noti.len = BATT_LEVEL_VALUE_LEN;
                 noti.pValue[0] = battLevel;
-
                 if(GATT_Notification(pLinkItem->connectionHandle, &noti, FALSE) != SUCCESS)
                 {
                     GATT_bm_free((gattMsg_t *)&noti, ATT_HANDLE_VALUE_NOTI);
@@ -483,62 +443,6 @@ static void battNotifyCB(linkDBItem_t *pLinkItem)
             }
         }
     }
-}
-
-/*********************************************************************
- * @fn      battMeasure
- *
- * @brief   Measure the battery level with the ADC and return
- *          it as a percentage 0-100%.
- *
- * @return  Battery level.
- */
-static uint8_t battMeasure(void)
-{
-    uint16_t adc;
-    uint8_t  percent;
-
-    // Call measurement setup callback
-    if(battServiceSetupCB != NULL)
-    {
-        battServiceSetupCB();
-    }
-
-    // Configure ADC and perform a read
-    adc = 300;
-    // Call measurement teardown callback
-    if(battServiceTeardownCB != NULL)
-    {
-        battServiceTeardownCB();
-    }
-
-    if(adc >= battMaxLevel)
-    {
-        percent = 100;
-    }
-    else if(adc <= battMinLevel)
-    {
-        percent = 0;
-    }
-    else
-    {
-        if(battServiceCalcCB != NULL)
-        {
-            percent = battServiceCalcCB(adc);
-        }
-        else
-        {
-            uint16_t range = battMaxLevel - battMinLevel + 1;
-
-            // optional if you want to keep it even, otherwise just take floor of divide
-            // range += (range & 1);
-            range >>= 2; // divide by 4
-
-            percent = (uint8_t)((((adc - battMinLevel) * 25) + (range - 1)) / range);
-        }
-    }
-
-    return percent;
 }
 
 /*********************************************************************

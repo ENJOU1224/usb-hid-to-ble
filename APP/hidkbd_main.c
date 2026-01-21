@@ -10,33 +10,7 @@
 #include "HAL.h"
 #include "hiddev.h"
 #include "hidkbd.h"
-
-// ===================================================================
-// ? 工程配置说明 (Project Configuration)
-// 建议在 MounRiver Studio 的工程属性 -> C/C++ Build -> Settings -> Preprocessor 中定义
-// ===================================================================
-
-/* 
- * [1. 调试模式 DEBUG]
- * 作用: 控制串口打印 (PA9/PB7 等引脚)。
- * 设置: 调试时定义 DEBUG=1；成品使用时建议删除该宏 (DEBUG=0)，以省电并防止串口泄露信息。
- */
-// #define DEBUG 1  // (建议在 IDE 工程属性中定义，此处仅作说明)
-
-/* 
- * [2. 电源模式 DCDC_ENABLE]
- * 作用: 决定是否开启内部 DCDC 降压。
- * 设置: 如果板子上有电感(通常是黑色方块4R7/10uH)，定义为 1 (推荐，省电30%)。
- *       如果板子上只有电容无电感，必须定义为 0，否则芯片无法工作。
- */
-// #define DCDC_ENABLE 1 // (建议在 IDE 工程属性中定义)
-
-/* 
- * [3. 蓝牙地址 BLE_MAC]
- * 作用: 是否使用自定义 MAC 地址。
- * 设置: 建议删除该宏。默认使用芯片出厂唯一 ID，避免多设备冲突。
- */
-// #define BLE_MAC 1    // (建议删除，使用芯片自带唯一ID) 
+#include "debug.h"
 
 // ===================================================================
 // ? 外部函数与全局变量
@@ -102,14 +76,15 @@ int main(void)
     // ----------------------------------------------------------------
 #ifdef DEBUG
     // 只有在定义了 DEBUG 宏时才编译这部分代码
-    GPIOA_SetBits(bTXD1);               // 串口 TX 拉高
-    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA); // 推挽输出
-    UART1_DefInit();                    // 默认波特率 115200
-    PRINT("--------------------------------\n");
-    PRINT("NiZ Wireless Adapter V9.0 Start\n");
-    PRINT("Build Date: %s\n", __DATE__);
-    PRINT("--------------------------------\n");
+    GPIOA_SetBits(bTXD1);                       // 串口 TX 拉高
+    GPIOA_ModeCfg(bTXD1, GPIO_ModeOut_PP_5mA);  // 推挽输出
+    UART1_DefInit();                            // 默认波特率 115200
 #endif
+    LOG_SYS("--------------------------------\n");
+    LOG_SYS("NiZ Wireless Adapter V9.0 Start\n");
+    LOG_SYS("Build Date: %s\n", __DATE__);
+    LOG_SYS("--------------------------------\n");
+
 
     // ----------------------------------------------------------------
     // 3. 蓝牙协议栈初始化 (固定流程)

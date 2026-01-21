@@ -30,6 +30,7 @@ extern "C" {
 #define START_REPORT_EVT          0x0002
 #define START_PARAM_UPDATE_EVT    0x0004
 #define START_PHY_UPDATE_EVT      0x0008
+#define START_BATT_READ_EVT       0x0010
 /*********************************************************************
  * MACROS
  */
