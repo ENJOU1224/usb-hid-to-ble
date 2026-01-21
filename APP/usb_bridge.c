@@ -52,9 +52,7 @@ volatile uint8_t Bridge_FoundNewDev = 0; // 新设备插入标志
 uint8_t last_report[8] = {0};            // 键盘上一次发送的数据(用于去重)
 uint8_t last_mouse_report[4] = {0};      // 鼠标上一次发送的数据
 static uint8_t send_pending = 0;         // 键盘流控标志
-
-// 键盘保活计数器
-static uint32_t keep_alive_timer = 0;
+static uint8_t niz_mouse_toggle_bit = 0;
 
 // ===================================================================
 // ?? 辅助函数区
@@ -241,7 +239,10 @@ void USB_Bridge_Poll(void)
         Bridge_FoundNewDev = 0;
         mDelaymS(200); 
         s = InitRootU2Device();
-        if(s == ERR_SUCCESS) LOG_SYS("Enum OK\n");
+        if(s == ERR_SUCCESS){
+            niz_mouse_toggle_bit = 0;
+            LOG_SYS("Enum OK\n");
+        } 
     }
 
     EnumAllU2HubPort(); // 维护 HUB 状态
@@ -284,40 +285,66 @@ void USB_Bridge_Poll(void)
         }
     }
 
+    
     // =================================================================
-    // ?? 任务 B: 读取鼠标 (修复版：有动作就发，不拦截)
+    // ?? 任务 B: 读取鼠标
     // =================================================================
     loc = U2SearchTypeDevice(DEV_TYPE_MOUSE);
-    uint8_t target_endp = 0;
-    
-    // 1. 寻找端点
+
+    // ----------- 定义统一的指针，指向“当前要用的同步标志位” -----------
+    uint8_t *p_target_endp_record = NULL; 
+    uint8_t current_endp_addr = 0;
+
     if (loc != 0xFFFF) {
-        len = (uint8_t)loc; 
-        SelectU2HubPort(len);
-        target_endp = len ? DevOnU2HubPort[len - 1].GpVar[0] : ThisUsb2Dev.GpVar[0];
-    } else {
-        // 针对 NiZ 的特殊处理 (强制读取 0x84)
-        if (ThisUsb2Dev.DeviceStatus >= ROOT_DEV_SUCCESS) {
-            target_endp = NIZ_MOUSE_ENDP; 
-            static uint8_t niz_toggle = 0;
-            if(niz_toggle) target_endp |= 0x80;
-            niz_toggle = !niz_toggle;
+        uint8_t dev_len = (uint8_t)loc; 
+        SelectU2HubPort(dev_len); // 选中HUB端口
+        
+        // 指向官方库维护的变量 (Inside Struct)
+        if (dev_len) p_target_endp_record = &DevOnU2HubPort[dev_len - 1].GpVar[0];
+        else         p_target_endp_record = &ThisUsb2Dev.GpVar[0];
+        
+        current_endp_addr = *p_target_endp_record;
+    } 
+    // =================================================================
+    // 2. 如果没找到标准鼠标，尝试 NIZ 强制模式
+    // =================================================================
+    else if (ThisUsb2Dev.DeviceStatus >= ROOT_DEV_SUCCESS) {
+        SelectU2HubPort(0); // 确保选中根设备
+        
+        // 我们利用一个静态变量来模拟官方库的行为
+        // 这里的 static 变量存储格式必须和官方库一致：
+        // Bit7: 下次期望的 DATA0/1 翻转位
+        // Bit0-6: 端点号 (不含方向)
+        static uint8_t niz_virtual_record = (NIZ_MOUSE_ENDP & 0x7F); 
+        
+        // 如果是新设备插入（通过全局标志判断），初始化这个变量为 DATA0
+        // 注意：你需要确保 Bridge_FoundNewDev 逻辑里把 niz_virtual_record 复位
+        // 或者简单的：如果 toggle错乱会自动纠正，不复位也行，但复位更稳
+        if (niz_mouse_toggle_bit == 0) { // 借用之前的复位逻辑
+             niz_virtual_record = (NIZ_MOUSE_ENDP & 0x7F);
+             niz_mouse_toggle_bit = 1; // 标记已初始化
         }
+
+        p_target_endp_record = &niz_virtual_record;
+        current_endp_addr = niz_virtual_record;
     }
 
-    if (target_endp != 0)
+    if (p_target_endp_record != NULL && current_endp_addr != 0)
     {
-        s = USB2HostTransact(USB_PID_IN << 4 | (target_endp & 0x7F), 
-                             (target_endp & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0, 0);
+        // current_endp_addr 此时已经包含了 Bit7 (TOGGLE) 和 Bit0-6 (Addr)
+        // 直接传给 Transact 函数即可
+        
+        // 构造传输参数：
+        // 如果 current_endp_addr 的 Bit7 是 1，代表下次要传 DATA1
+        // Transact 函数需要的标志是：RB_UH_R_TOG | RB_UH_T_TOG
+        uint8_t transact_flag = (current_endp_addr & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0;
+        
+        s = USB2HostTransact(USB_PID_IN << 4 | (current_endp_addr & 0x7F), transact_flag, 0);
 
         if(s == ERR_SUCCESS)
         {
-            // 更新同步位 (仅标准设备)
-            if (loc != 0xFFFF) {
-                target_endp ^= 0x80;
-                if(len) DevOnU2HubPort[len - 1].GpVar[0] = target_endp;
-                else    ThisUsb2Dev.GpVar[0] = target_endp;
-            }
+            // --- 核心共用逻辑：成功后翻转同步位 ---
+            *p_target_endp_record ^= 0x80; // 无论是官方结构体还是我们的静态变量，统统翻转 Bit7
 
             len = R8_USB2_RX_LEN;
             if(len >= 3) 
