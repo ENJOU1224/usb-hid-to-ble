@@ -383,3 +383,16 @@ uint8_t HidEmu_SendUSBReport(uint8_t *pData)
 {
     return HidDev_Report(HID_RPT_ID_KEY_IN, HID_REPORT_TYPE_INPUT, 8, pData);
 }
+
+// ===================================================================
+// ?? 发送鼠标数据 (ID = 2)
+// 参数: pData (4字节: [Btn, X, Y, Wheel])
+// ===================================================================
+uint8_t HidEmu_SendMouseReport(uint8_t *pData)
+{
+    // 调用底层发送函数
+    // 参数1: Report ID (2)
+    // 参数2: 类型 (Input)
+    // 参数3: 长度 (4字节)
+    return HidDev_Report(HID_RPT_ID_MOUSE_IN, HID_REPORT_TYPE_INPUT, 4, pData);
+}
