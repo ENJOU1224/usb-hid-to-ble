@@ -1,10 +1,10 @@
 /*********************************************************************
  * File Name          : usb_bridge.c
  * Author             : DIY User & AI Assistant
- * Version            : V17.0 (Mouse Continuous Move Fix)
+ * Version            : V18.0 (Refactored & Optimized)
  * Description        : USB Host 转 Bluetooth 核心桥接逻辑
- *                      - 修复键盘模拟鼠标长按不移动的问题
- *                      - 包含详细注释
+ *                      - 统一了标准鼠标与非标准(NiZ)鼠标的处理逻辑
+ *                      - 优化了 DATA0/DATA1 同步位的管理方式
  *********************************************************************/
 
 #include "CH58xBLE_LIB.H"
@@ -15,162 +15,83 @@
 // ? 用户配置区 (User Configuration)
 // ===================================================================
 
-// NiZ 键盘键位偏移量
-// NiZ 的 NKRO 协议通常从第 2 字节开始位图，计算出的键码通常偏小，需要补偿
-#define NIZ_KEY_OFFSET    4   
-
-// NiZ 键盘的鼠标数据端点 (Interface 2)
-// 只有强制读取这个端点，才能获取 Fn+WASD 的数据
-#define NIZ_MOUSE_ENDP    0x84 
-
-// 键盘长按保活阈值 (单位: 轮询次数)
-// 防止蓝牙连接活跃度低导致系统认为按键松开
-#define KBD_KEEP_ALIVE_THRESHOLD  2000
+// NiZ 键盘特殊参数
+#define NIZ_KEY_OFFSET    4       // 键码偏移补偿
+#define NIZ_MOUSE_ENDP    0x84    // 强制指定的鼠标端点 (Interface 2)
 
 // ===================================================================
+// ? 全局变量与缓冲区
+// ===================================================================
 
-// --- 外部函数引用 (External References) ---
-// 发送键盘报文 (8字节)
+// --- USB 缓冲区 (必须 4 字节对齐) ---
+__attribute__((aligned(4))) uint8_t RxBuffer[MAX_PACKET_SIZE]; 
+__attribute__((aligned(4))) uint8_t TxBuffer[MAX_PACKET_SIZE]; 
+
+// --- 状态标志 ---
+volatile uint8_t Bridge_NewDevFlag = 0; // 新设备插入事件标志
+
+// --- 键盘状态 ---
+static uint8_t  last_kbd_report[8] = {0}; // 键盘上次数据(去重用)
+static uint8_t  kbd_send_pending = 0;     // 键盘流控重发标志
+
+// --- 鼠标状态 ---
+static uint8_t  last_mouse_report[4] = {0}; // 鼠标上次数据(去重用)
+
+// [优化] NiZ 鼠标专用同步记录变量
+// 格式说明：Bit7=同步位(0=DATA0, 1=DATA1), Bit0-6=端点号
+// 初始化为 0x04 (即端点4, 期望DATA0)
+static uint8_t  Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F); 
+
+// ===================================================================
+// ? 外部函数引用
+// ===================================================================
 extern uint8_t HidEmu_SendUSBReport(uint8_t *pData);
-// 发送鼠标报文 (4字节)
 extern uint8_t HidEmu_SendMouseReport(uint8_t *pData);
-
-// 官方 USB2 Host 驱动函数
 extern uint8_t InitRootU2Device(void);
 extern uint8_t AnalyzeRootU2Hub(void);
 extern uint8_t EnumAllU2HubPort(void);
 extern uint16_t U2SearchTypeDevice(uint8_t type);
 extern void SelectU2HubPort(uint8_t hub_port);
-extern uint8_t U2SETorOFFNumLock(PUINT8 buf);
 
-// --- 内存缓冲区 (必须4字节对齐) ---
-__attribute__((aligned(4))) uint8_t RxBuffer[MAX_PACKET_SIZE]; 
-__attribute__((aligned(4))) uint8_t TxBuffer[MAX_PACKET_SIZE]; 
-
-// --- 全局状态变量 ---
-volatile uint8_t Bridge_FoundNewDev = 0; // 新设备插入标志
-uint8_t last_report[8] = {0};            // 键盘上一次发送的数据(用于去重)
-uint8_t last_mouse_report[4] = {0};      // 鼠标上一次发送的数据
-static uint8_t send_pending = 0;         // 键盘流控标志
-static uint8_t niz_mouse_toggle_bit = 0;
 
 // ===================================================================
-// ?? 辅助函数区
+// ?? 辅助函数：数据解析与调试
 // ===================================================================
 
-/**
- * @brief  判断键盘是否处于全松开状态
- * @return 1=全松开, 0=有键按下
- */
-uint8_t Is_All_Released(uint8_t *buf) {
-    // 遍历8个字节，只要有一个非0，就说明有动作
-    for(int i=0; i<8; i++) {
-        if(buf[i] != 0) return 0; 
-    }
-    return 1;
-}
 
-/**
- * @brief  调试打印：显示原始鼠标数据
- */
-void Show_Raw_Mouse(uint8_t *buf, uint8_t len)
-{
-    #if (defined(DEBUG_MOUSE) && DEBUG_MOUSE == 1)
-    PRINT("RAW MOUSE [%d]: ", len);
-    for(int i=0; i<len; i++) PRINT("%02X ", buf[i]);
-    PRINT("\n");
-    #endif
-}
-
-/**
- * @brief  调试打印：解析并显示键盘按键名称
- */
-#if (defined(DEBUG_KEY) && DEBUG_KEY == 1)
-static const char* key_names[] = {
-    [0x00] = NULL, [0x04]="a", [0x05]="b", [0x06]="c", [0x07]="d", [0x08]="e",
-    [0x09]="f", [0x0A]="g", [0x0B]="h", [0x0C]="i", [0x0D]="j", [0x0E]="k",
-    [0x0F]="l", [0x10]="m", [0x11]="n", [0x12]="o", [0x13]="p", [0x14]="q",
-    [0x15]="r", [0x16]="s", [0x17]="t", [0x18]="u", [0x19]="v", [0x1A]="w",
-    [0x1B]="x", [0x1C]="y", [0x1D]="z", [0x1E]="1", [0x1F]="2", [0x20]="3",
-    [0x21]="4", [0x22]="5", [0x23]="6", [0x24]="7", [0x25]="8", [0x26]="9",
-    [0x27]="0", [0x28]="Enter", [0x29]="Esc", [0x2A]="Backspace", [0x2B]="Tab",
-    [0x2C]="Space", [0x2D]="-", [0x2E]="=", [0x2F]="[", [0x30]="]", [0x31]="\\",
-    [0x32]=";", [0x33]="'", [0x34]="`", [0x35]=",", [0x36]=".", [0x37]="/",
-    [0x39]="CapsLock", [0x3A]="F1", [0x3B]="F2", [0x3C]="F3", [0x3D]="F4",
-    [0x3E]="F5", [0x3F]="F6", [0x40]="F7", [0x41]="F8", [0x42]="F9", [0x43]="F10",
-    [0x44]="F11", [0x45]="F12", [0x4F]="Right", [0x50]="Left", [0x51]="Down", [0x52]="Up",
-};
-
-void Show_Current_Keys(uint8_t *report) {
-    uint8_t mods = report[0];
-    uint8_t has_print = 0;
-    PRINT("KEYS: ");
-    if (mods & 0x01) { PRINT("L-Ctrl ");  has_print=1; }
-    if (mods & 0x02) { PRINT("L-Shift "); has_print=1; }
-    if (mods & 0x04) { PRINT("L-Alt ");   has_print=1; }
-    if (mods & 0x08) { PRINT("L-Win ");   has_print=1; }
-    if (mods & 0x10) { PRINT("R-Ctrl ");  has_print=1; }
-    if (mods & 0x20) { PRINT("R-Shift "); has_print=1; }
-    if (mods & 0x40) { PRINT("R-Alt ");   has_print=1; }
-    if (mods & 0x80) { PRINT("R-Win ");   has_print=1; }
-    for (int i = 2; i < 8; i++) {
-        uint8_t code = report[i];
-        if (code != 0 && code < sizeof(key_names)/sizeof(char*)) {
-            if(key_names[code]) { 
-                if(has_print) PRINT("+ ");
-                PRINT("%s ", key_names[code]); 
-            } else {
-                if(has_print) PRINT("+ ");
-                PRINT("[%02X] ", code);
-            }
-            has_print = 1;
-        }
-    }
-    if (!has_print) PRINT("(All Released)");
-    PRINT("\n");
-}
-#endif
-
-/**
- * @brief  调试打印：显示鼠标坐标和按键
- */
-#ifdef DEBUG_MOUSE
-void Show_Current_Mouse(uint8_t *report) {
-    PRINT("MOUSE: ");
-    if (report[0] & 0x01) PRINT("[L] ");
-    if (report[0] & 0x02) PRINT("[R] ");
-    if (report[0] & 0x04) PRINT("[M] ");
-    int8_t x=(int8_t)report[1], y=(int8_t)report[2], w=(int8_t)report[3];
-    if (x!=0 || y!=0 || w!=0) PRINT("X:%d Y:%d W:%d", x, y, w);
-    PRINT("\n");
-}
-#endif
 
 /**
  * @brief  键盘数据解析 (兼容标准6键与NKRO)
+ * @param  in_buf   USB接收到的原始数据
+ * @param  len      数据长度
+ * @param  out_buf  输出的标准8字节 HID 报文
  */
-void Parse_Input_Data(uint8_t* in_buf, uint8_t len, uint8_t* out_buf)
-{
+void Parse_Keyboard_Data(uint8_t* in_buf, uint8_t len, uint8_t* out_buf) {
     memset(out_buf, 0, 8);
-    // 1. 标准 8 字节包：直接复制
+    
+    // 情况1: 标准 8 字节 Boot Keyboard 报文
     if (len == 8) {
         memcpy(out_buf, in_buf, 8);
         return;
     }
-    // 2. NKRO 长包：位图转字节
+    
+    // 情况2: NiZ 等 NKRO 变长报文 (位图转标准键码)
     if (len > 8) {
-        out_buf[0] = in_buf[0]; // 修饰键
-        int key_count = 0;
+        out_buf[0] = in_buf[0]; // 复制修饰键 (Ctrl/Shift/Alt/Win)
+        int key_slot = 0;
+        
+        // 遍历位图数据 (从第2字节开始)
         for (int i = 2; i < len; i++) {
             if (in_buf[i] != 0) {
                 for (int bit = 0; bit < 8; bit++) {
                     if ((in_buf[i] >> bit) & 0x01) {
+                        // 计算键码并加上偏移量
                         uint8_t keycode = (i - 2) * 8 + bit + NIZ_KEY_OFFSET;
-                        if (keycode > 3 && keycode < 255) {
-                            if (key_count < 6) {
-                                out_buf[2 + key_count] = keycode;
-                                key_count++;
-                            }
+                        
+                        // 填充到 6 个按键槽位中
+                        if (keycode > 3 && keycode < 255 && key_slot < 6) {
+                            out_buf[2 + key_slot] = keycode;
+                            key_slot++;
                         }
                     }
                 }
@@ -179,199 +100,205 @@ void Parse_Input_Data(uint8_t* in_buf, uint8_t len, uint8_t* out_buf)
     }
 }
 
+
 // ===================================================================
-// ? 核心初始化与轮询
+// ? 核心逻辑
 // ===================================================================
 
-void USB_Bridge_Init(void)
-{
-    // 开启 PA9 为 USB 供电 (根据板子硬件连接)
+void USB_Bridge_Init(void) {
+    // 1. 硬件 IO 初始化 (开启 USB 供电)
     GPIOA_SetBits(GPIO_Pin_9);
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     
-    // 绑定 USB 数据缓冲区
+    // 2. 绑定 USB RAM
     pU2HOST_RX_RAM_Addr = RxBuffer;
     pU2HOST_TX_RAM_Addr = TxBuffer;
     
-    // 初始化 USB Host
+    // 3. 初始化协议栈
     USB2_HostInit();
     
-    Bridge_FoundNewDev = 0;
-    send_pending = 0;
-    LOG_SYS("USB2 Init OK. Keep-Alive Mode ON.\n");
+    Bridge_NewDevFlag = 0;
+    kbd_send_pending = 0;
+    
+    // 初始化 NiZ 记录变量 (清除 DATA1 标志，只保留端点号)
+    Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F);
+    
+    LOG_SYS("USB Init OK. Bridge Ready.\n");
 }
 
-void USB_Bridge_Poll(void)
-{
-    uint8_t s, i, len, endp;
-    uint16_t loc;
+void USB_Bridge_Poll(void) {
+    uint8_t s, len, endp_addr;
+    uint16_t search_res;
     
     // --------------------------------------------------------
-    // 1. 键盘数据流控重发
-    //    如果上一包键盘数据没发出去，优先重试，防止丢键
+    // [任务 0] 键盘流控处理
+    // 如果上次发送失败（蓝牙忙），优先重试，保证按键不丢失
     // --------------------------------------------------------
-    if (send_pending) {
-        if (HidEmu_SendUSBReport(last_report) == SUCCESS) {
-            send_pending = 0;
-            LOG_BLE("Resend!\n");
+    if (kbd_send_pending) {
+        if (HidEmu_SendUSBReport(last_kbd_report) == SUCCESS) {
+            kbd_send_pending = 0; // 发送成功，清除标志
+            LOG_BLE("KBD Resend OK\n");
         } else {
-            return; // 蓝牙忙，退出等待下次
+            return; // 依然忙，暂停本轮处理
         }
     }
 
     // --------------------------------------------------------
-    // 2. 硬件检测插拔事件
+    // [任务 1] 硬件插拔检测与设备枚举
     // --------------------------------------------------------
     if(R8_USB2_INT_FG & RB_UIF_DETECT) {
-        R8_USB2_INT_FG = RB_UIF_DETECT; // 清除标志
+        R8_USB2_INT_FG = RB_UIF_DETECT; // 清中断
         s = AnalyzeRootU2Hub();
-        if(s == ERR_USB_CONNECT) Bridge_FoundNewDev = 1;
-        else if (s == ERR_USB_DISCON) Bridge_FoundNewDev = 0;
+        if(s == ERR_USB_CONNECT) Bridge_NewDevFlag = 1;
+        else if (s == ERR_USB_DISCON) Bridge_NewDevFlag = 0;
     }
+    // 防止其他杂项中断卡死
     else if (R8_USB2_INT_FG) { 
-        R8_USB2_INT_FG = 0xFF; // 清除杂项中断防止卡死
+        R8_USB2_INT_FG = 0xFF; 
     }
 
-    // --------------------------------------------------------
-    // 3. 新设备枚举
-    // --------------------------------------------------------
-    if(Bridge_FoundNewDev) {
-        Bridge_FoundNewDev = 0;
-        mDelaymS(200); 
+    // 处理新设备插入
+    if(Bridge_NewDevFlag) {
+        Bridge_NewDevFlag = 0;
+        mDelaymS(200); // 等待设备电源稳定
         s = InitRootU2Device();
         if(s == ERR_SUCCESS){
-            niz_mouse_toggle_bit = 0;
-            LOG_SYS("Enum OK\n");
+            LOG_SYS("Device Enum OK\n");
+            // 【重要】设备重新插入后，必须重置 NiZ 鼠标的同步位
+            // 恢复为 0x04 (Bit7=0 表示下次期望 DATA0)
+            Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F);
         } 
     }
 
-    EnumAllU2HubPort(); // 维护 HUB 状态
+    // 周期性维护 HUB 状态 (如果有 HUB)
+    EnumAllU2HubPort(); 
 
     // =================================================================
-    // ? 任务 A: 读取键盘 (需去重 + 保活)
+    // [任务 2] 读取键盘数据
     // =================================================================
-    loc = U2SearchTypeDevice(DEV_TYPE_KEYBOARD);
-    if(loc != 0xFFFF)
+    search_res = U2SearchTypeDevice(DEV_TYPE_KEYBOARD);
+    if(search_res != 0xFFFF)
     {
-        i = (uint8_t)(loc >> 8);
-        len = (uint8_t)loc;
+        uint8_t dev_addr = (uint8_t)(search_res >> 8); // HUB端口号
+        len = (uint8_t)search_res;                     // 接口号
         SelectU2HubPort(len); 
-        endp = len ? DevOnU2HubPort[len - 1].GpVar[0] : ThisUsb2Dev.GpVar[0];
+        
+        // 获取官方库维护的端点记录
+        endp_addr = len ? DevOnU2HubPort[len - 1].GpVar[0] : ThisUsb2Dev.GpVar[0];
 
-        if(endp & USB_ENDP_ADDR_MASK)
+        // 只有端点有效才通讯
+        if(endp_addr & USB_ENDP_ADDR_MASK)
         {
-            s = USB2HostTransact(USB_PID_IN << 4 | (endp & 0x7F), 
-                                 (endp & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0, 0);
+            // 执行 IN 事务
+            // 根据端点变量的 Bit7 自动决定是发 DATA0 还是 DATA1
+            s = USB2HostTransact(USB_PID_IN << 4 | (endp_addr & 0x7F), 
+                                 (endp_addr & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0, 0);
 
             if(s == ERR_SUCCESS)
             {
-                endp ^= 0x80;
-                if(len) DevOnU2HubPort[len - 1].GpVar[0] = endp;
-                else    ThisUsb2Dev.GpVar[0] = endp;
+                // 成功后翻转同步位 (Bit7)
+                endp_addr ^= 0x80;
+                // 写回官方库结构体
+                if(len) DevOnU2HubPort[len - 1].GpVar[0] = endp_addr;
+                else    ThisUsb2Dev.GpVar[0] = endp_addr;
 
                 len = R8_USB2_RX_LEN;
                 if(len > 0) 
                 {
-                    uint8_t current_report[8] = {0};
-                    Parse_Input_Data(RxBuffer, len, current_report);
+                    uint8_t temp_report[8] = {0};
+                    Parse_Keyboard_Data(RxBuffer, len, temp_report);
+                    DBG_KEYS(temp_report);
                     
-                    // 立即发送
-                    memcpy(last_report, current_report, 8);
-                    DBG_KEYS(last_report);
-                        
-                    if (HidEmu_SendUSBReport(last_report) != SUCCESS) send_pending = 1;
+                    memcpy(last_kbd_report, temp_report, 8);
+                    
+                    // 发送给蓝牙
+                    if (HidEmu_SendUSBReport(last_kbd_report) != SUCCESS) {
+                        kbd_send_pending = 1; // 标记待重发
+                    }
                 }
             }
         }
     }
 
+    // =================================================================
+    // [任务 3] 读取鼠标数据 (统一逻辑优化版)
+    // =================================================================
     
-    // =================================================================
-    // ?? 任务 B: 读取鼠标
-    // =================================================================
-    loc = U2SearchTypeDevice(DEV_TYPE_MOUSE);
+    // 定义一个指针，指向“我们要操作的那个端点记录变量”
+    // 无论是官方库管理的标准鼠标，还是我们自己管理的 NiZ 鼠标，都通过这个指针操作
+    uint8_t *p_mouse_toggle_record = NULL; 
+    uint8_t current_record_val = 0;
 
-    // ----------- 定义统一的指针，指向“当前要用的同步标志位” -----------
-    uint8_t *p_target_endp_record = NULL; 
-    uint8_t current_endp_addr = 0;
-
-    if (loc != 0xFFFF) {
-        uint8_t dev_len = (uint8_t)loc; 
-        SelectU2HubPort(dev_len); // 选中HUB端口
+    // A. 尝试寻找标准鼠标
+    search_res = U2SearchTypeDevice(DEV_TYPE_MOUSE);
+    if (search_res != 0xFFFF) {
+        uint8_t hub_port = (uint8_t)search_res; 
+        SelectU2HubPort(hub_port); // 物理选中端口
         
-        // 指向官方库维护的变量 (Inside Struct)
-        if (dev_len) p_target_endp_record = &DevOnU2HubPort[dev_len - 1].GpVar[0];
-        else         p_target_endp_record = &ThisUsb2Dev.GpVar[0];
-        
-        current_endp_addr = *p_target_endp_record;
+        // 指向官方库结构体中的变量
+        if (hub_port) p_mouse_toggle_record = &DevOnU2HubPort[hub_port - 1].GpVar[0];
+        else          p_mouse_toggle_record = &ThisUsb2Dev.GpVar[0];
     } 
-    // =================================================================
-    // 2. 如果没找到标准鼠标，尝试 NIZ 强制模式
-    // =================================================================
+    // B. 如果没找到标准鼠标，且设备已枚举，尝试强制读取 NiZ 接口
     else if (ThisUsb2Dev.DeviceStatus >= ROOT_DEV_SUCCESS) {
-        SelectU2HubPort(0); // 确保选中根设备
-        
-        // 我们利用一个静态变量来模拟官方库的行为
-        // 这里的 static 变量存储格式必须和官方库一致：
-        // Bit7: 下次期望的 DATA0/1 翻转位
-        // Bit0-6: 端点号 (不含方向)
-        static uint8_t niz_virtual_record = (NIZ_MOUSE_ENDP & 0x7F); 
-        
-        // 如果是新设备插入（通过全局标志判断），初始化这个变量为 DATA0
-        // 注意：你需要确保 Bridge_FoundNewDev 逻辑里把 niz_virtual_record 复位
-        // 或者简单的：如果 toggle错乱会自动纠正，不复位也行，但复位更稳
-        if (niz_mouse_toggle_bit == 0) { // 借用之前的复位逻辑
-             niz_virtual_record = (NIZ_MOUSE_ENDP & 0x7F);
-             niz_mouse_toggle_bit = 1; // 标记已初始化
-        }
-
-        p_target_endp_record = &niz_virtual_record;
-        current_endp_addr = niz_virtual_record;
+        SelectU2HubPort(0); // 【关键】确保操作对象是根端口设备
+        // 指向我们自己定义的全局变量
+        p_mouse_toggle_record = &Var_NizMouse_Record;
     }
 
-    if (p_target_endp_record != NULL && current_endp_addr != 0)
+    // 如果确定了目标，开始传输
+    if (p_mouse_toggle_record != NULL)
     {
-        // current_endp_addr 此时已经包含了 Bit7 (TOGGLE) 和 Bit0-6 (Addr)
-        // 直接传给 Transact 函数即可
+        current_record_val = *p_mouse_toggle_record;
         
-        // 构造传输参数：
-        // 如果 current_endp_addr 的 Bit7 是 1，代表下次要传 DATA1
-        // Transact 函数需要的标志是：RB_UH_R_TOG | RB_UH_T_TOG
-        uint8_t transact_flag = (current_endp_addr & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0;
-        
-        s = USB2HostTransact(USB_PID_IN << 4 | (current_endp_addr & 0x7F), transact_flag, 0);
+        // 如果端点号为0，说明设备未正确初始化，跳过
+        if ((current_record_val & 0x7F) != 0) {
+            
+            // 计算 DATA0/1 标志
+            // Bit7 == 1 -> RB_UH_R_TOG | RB_UH_T_TOG (发送DATA1)
+            // Bit7 == 0 -> 0                         (发送DATA0)
+            uint8_t token_pid = (current_record_val & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0;
+            
+            // 发起传输
+            s = USB2HostTransact(USB_PID_IN << 4 | (current_record_val & 0x7F), token_pid, 0);
 
-        if(s == ERR_SUCCESS)
-        {
-            // --- 核心共用逻辑：成功后翻转同步位 ---
-            *p_target_endp_record ^= 0x80; // 无论是官方结构体还是我们的静态变量，统统翻转 Bit7
-
-            len = R8_USB2_RX_LEN;
-            if(len >= 3) 
+            if(s == ERR_SUCCESS)
             {
-                uint8_t current_mouse[4] = {0}; 
-                // --- 协议智能适配 ---
-                if (len == 5) {
-                    memcpy(current_mouse, RxBuffer + 1, 4); // NiZ: 跳过ID [ID, Btn, X, Y, W]
-                } else if (len >= 7) {
-                    current_mouse[0] = RxBuffer[1]; // Btn
-                    current_mouse[1] = RxBuffer[2]; // X
-                    current_mouse[2] = RxBuffer[4]; // Y
-                    current_mouse[3] = RxBuffer[6]; // Wheel
-                } else if (len == 3) {
-                    memcpy(current_mouse, RxBuffer, 3); // Std [Btn, X, Y]
-                } else if (len == 4) {
-                    if (RxBuffer[0] <= 5) memcpy(current_mouse, RxBuffer + 1, 3);
-                    else memcpy(current_mouse, RxBuffer, 4);
-                }
-                Show_Raw_Mouse(current_mouse,len);
-                memcpy(last_mouse_report, current_mouse, 4);
-                DBG_MOUSE(current_mouse);
+                // 1. 更新同步位：直接翻转内存中的 Bit7
+                // 这样下一次循环读取时，就会自动切换到相反的 DATA 状态
+                *p_mouse_toggle_record ^= 0x80;
+
+                // 2. 解析数据
+                len = R8_USB2_RX_LEN;
+                if(len >= 3) 
+                {
+                    uint8_t mouse_data[4] = {0}; 
                     
-                // 发送给蓝牙
-                // 注意：鼠标数据流很大，如果蓝牙忙，这里选择丢弃当前包，
-                // 而不是像键盘那样阻塞等待，以保证光标流畅度。
-                HidEmu_SendMouseReport(current_mouse);
+                    // --- 协议适配区 ---
+                    if (len == 5) {
+                        // NiZ 格式: [ID, Btn, X, Y, Wheel] -> 偏移1字节
+                        memcpy(mouse_data, RxBuffer + 1, 4); 
+                    } else if (len >= 7) {
+                        // 复杂鼠标格式
+                        mouse_data[0] = RxBuffer[1]; // Btn
+                        mouse_data[1] = RxBuffer[2]; // X
+                        mouse_data[2] = RxBuffer[4]; // Y
+                        mouse_data[3] = RxBuffer[6]; // Wheel
+                    } else if (len == 3) {
+                        // 标准基础格式: [Btn, X, Y]
+                        memcpy(mouse_data, RxBuffer, 3); 
+                    } else if (len == 4) {
+                        // 某些带 ID 的 4 字节格式
+                        if (RxBuffer[0] <= 5) memcpy(mouse_data, RxBuffer + 1, 3);
+                        else memcpy(mouse_data, RxBuffer, 4);
+                    }
+
+                    // --- 发送处理 ---
+                    DBG_MOUSE(mouse_data);
+                    
+                    // 鼠标数据量大，不需要重发机制，蓝牙忙则丢弃以保证实时性
+                    HidEmu_SendMouseReport(mouse_data);
+                }
             }
         }
     }

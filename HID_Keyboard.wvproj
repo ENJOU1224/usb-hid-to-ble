@@ -161,12 +161,8 @@
 						"defined_symbols": [
 							"DCDC_ENABLE=1",
 							"ENABLE_WATCHDOG=1",
-							"DEBUG=1",
-							"DEBUG_USB=1",
-							"DEBUG_SYS=1",
-							"DEBUG_BLE=1",
-							"DEBUG_KEY=1",
-							"DEBUG_MOUSE=1"
+							"DEBUG_BATT=1",
+							"DEBUG=1"
 						],
 						"undefined_symbols": []
 					},

@@ -159,7 +159,7 @@ void HidEmu_Init()
     // 浮空输入
     GPIOA_ModeCfg(BATT_ADC_PIN, GPIO_ModeIN_Floating);
     // 初始化 ADC
-    ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_0);
+    ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_1_2);
     // 获取校准值 (根据你的SDK示例)
     ADC_RoughCalib_Value = ADC_DataCalib_Rough();
     LOG_BATT("ADC Calib Offset: %d\n", ADC_RoughCalib_Value);
@@ -235,7 +235,7 @@ static void HidEmu_MeasureBattery(void)
 {
     uint32_t adc_sum = 0;
     uint16_t adc_avg = 0;
-    uint16_t voltage_mv = 0;
+    uint32_t voltage_mv = 0;
     uint8_t  percent = 0;
     signed short raw_val;
 
@@ -252,9 +252,13 @@ static void HidEmu_MeasureBattery(void)
     adc_avg = adc_sum / 20;
 
     // 3. 转换为电压 (mV)
-    // 假设 VCC=3.3V, 1/2分压。公式: (ADC / 4095) * 3300 * 2
-    // 简化: (adc * 6600) / 4095
-    voltage_mv = (adc_avg * 6600) / 4095;
+    // 1. PGA = -6dB (1/2倍增益) -> ADC满量程对应引脚电压 3.15V (3 * Vref)
+    // 2. 硬件分压 = 1/2 -> 电池电压 = 引脚电压 * 2
+    // 3. 综合：ADC满量程(4095) 对应 电池电压 6.3V (6300mV)
+    
+    // 整数运算公式： (ADC * 6300) / 4095
+    int32_t temp = (int32_t)adc_avg * 100 * 21;
+    voltage_mv = (temp + 512) / 1024 - 2100;
 
     // 4. 查表计算百分比
     percent = 0;
