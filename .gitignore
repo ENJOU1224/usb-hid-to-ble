@@ -1,0 +1,8 @@
+/*
+!.gitignore
+!/APP/
+!/HAL/
+!/SRC/
+!/LIB/
+!/Profile/
+!HID_Keyboard.wvproj
