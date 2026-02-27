@@ -16,21 +16,6 @@
 #include "debug.h"
 
 // ===================================================================
-// ? LED 硬件定义 (Hardware Definitions)
-// ===================================================================
-// 这里的定义仅用于主板基础初始化
-// LED1 (PB4): 系统电源指示 (System Power)
-// LED2 (PB7): 蓝牙状态指示 (BLE Status) - 控制逻辑在 hidkbd.c 中
-#define LED1_PIN   GPIO_Pin_4
-#define LED2_PIN   GPIO_Pin_7
-
-// LED1 控制宏 (低电平点亮)
-#define LED1_ON()  GPIOB_ResetBits(LED1_PIN)
-#define LED1_OFF() GPIOB_SetBits(LED1_PIN)
-#define LED2_ON()  GPIOB_ResetBits(LED2_PIN)
-#define LED2_OFF() GPIOB_SetBits(LED2_PIN)
-
-// ===================================================================
 // ? 外部引用 (External References)
 // ===================================================================
 extern void USB_Bridge_Init(void);
@@ -99,13 +84,8 @@ int main(void)
     // ----------------------------------------------------------------
     // 2. GPIO 初始化 (LED)
     // ----------------------------------------------------------------
-    // 配置 PB4 (Power) 和 PB7 (Status) 为推挽输出
-    GPIOB_ModeCfg(LED1_PIN | LED2_PIN, GPIO_ModeOut_PP_5mA);
-    
-    // 初始状态：全灭 (高电平)
-    // 防止上电瞬间闪烁，等待各模块就绪后再点亮
-    LED1_OFF(); 
-    LED2_OFF(); // LED2 也先灭掉，由蓝牙栈接管
+    // 1. LED 硬件初始化
+    LED_HW_INIT(); 
 
     // ----------------------------------------------------------------
     // 3. 调试串口初始化

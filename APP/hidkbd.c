@@ -35,12 +35,6 @@
 // ?? 硬件引脚配置 (Hardware Config)
 // ===================================================================
 
-// --- 状态指示灯 (LED2 -> PB7) ---
-// 逻辑: 低电平亮 (Active Low)
-#define LED2_PIN             GPIO_Pin_7
-#define LED2_ON()            GPIOB_ResetBits(LED2_PIN)
-#define LED2_OFF()           GPIOB_SetBits(LED2_PIN)
-
 // --- 电池检测 (ADC -> PA4) ---
 #define BATT_ADC_PIN         GPIO_Pin_4       
 #define BATT_ADC_CHANNEL     0                // ADC Channel 0
@@ -94,12 +88,27 @@ static signed short ADC_RoughCalib_Value = 0;       // ADC 校准偏移值
 // 线性插值查表法，更符合锂电池放电特性
 typedef struct { uint16_t mv; uint8_t pct; } BattMap;
 static const BattMap batt_table[] = {
-    {4150, 100}, {4100, 95}, {4050, 90}, {4000, 85},
-    {3950, 80},  {3900, 75}, {3850, 70}, {3800, 65},
-    {3750, 60},  {3720, 55}, {3690, 50}, {3660, 45},
-    {3630, 40},  {3600, 35}, {3570, 30}, {3540, 25},
-    {3510, 20},  {3480, 15}, {3450, 10}, {3400, 5},
-    {0, 0}
+    /* 电压(mV)  百分比   剩余时间(约)   Log对应状态分析 */
+    {4200,      100},  // 64.5h  充电器拔出瞬间
+    {4100,       95},  // 61.3h  初期虚电消除 (Log约 3h)
+    {4070,       90},  // 58.0h  (Log约 6.5h)
+    {4000,       80},  // 51.6h  (Log约 13h)
+    {3910,       70},  // 45.1h  (Log约 19.5h)
+    {3840,       60},  // 38.7h  (Log约 26h)
+    {3750,       50},  // 32.2h  *** 绝对中点 *** (电压比普通设备高，因为负载轻)
+    {3660,       40},  // 25.8h  (Log约 39h)
+    {3600,       30},  // 19.3h  开始进入平台末期
+    {3510,       20},  // 12.9h  
+    {3450,       15},  // 9.7h   
+    {3380,       10},  // 6.5h   低压警告线，电压开始加速下降
+    {3340,        8},  // 5.2h
+    {3300,        6},  // 3.9h   (Log中 1-31 06:00 左右)
+    {3260,        4},  // 2.6h
+    {3220,        2},  // 1.3h   最后时刻，准备保存数据
+    {3180,        1},  // 0.6h   (Log中 3180mV 后只剩半小时)
+    {3100,        0},  // 0.0h   UVLO 关机保护
+    
+    {0,           0}   // 结束符，用于算法边界保护
 };
 
 // ===================================================================
@@ -259,11 +268,29 @@ static void HidEmu_MeasureBattery(void)
     if (voltage_mv < 0) voltage_mv = 0;
 
     // 3. 查表获取百分比
-    for (int i = 0; i < sizeof(batt_table)/sizeof(BattMap); i++) {
-        if (voltage_mv >= batt_table[i].mv) {
-            percent = batt_table[i].pct;
+    for (int i = 0; i < sizeof(batt_table)/sizeof(BattMap) - 1; i++) {
+        if (voltage_mv >= batt_table[0].mv){
+            percent = 100;
+            break;
+        } 
+        if (voltage_mv <= batt_table[sizeof(batt_table)/sizeof(BattMap) - 2].mv) {
+            percent = 0;
             break;
         }
+        // 3. 查表插值
+    for (int i = 0; i < sizeof(batt_table)/sizeof(BattMap) - 1; i++) {
+        // 因为已经处理了 >= table[0]，这里主要找区间
+        if (voltage_mv >= batt_table[i+1].mv) {
+            uint16_t high_mv = batt_table[i].mv;
+            uint16_t low_mv  = batt_table[i+1].mv;
+            uint8_t  high_pct = batt_table[i].pct;
+            uint8_t  low_pct  = batt_table[i+1].pct;
+
+            // 线性插值公式
+            percent = low_pct + (uint32_t)(voltage_mv - low_mv) * (high_pct - low_pct) / (high_mv - low_mv);
+            break;
+        }
+    }
     }
 
     // 4. 若电量变化，推送到蓝牙服务
