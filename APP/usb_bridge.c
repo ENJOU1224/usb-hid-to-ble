@@ -1,49 +1,105 @@
-/*********************************************************************
- * File Name          : usb_bridge.c
- * Author             : DIY User & AI Assistant
- * Version            : V18.0 (Refactored & Optimized)
- * Description        : USB Host ×ª Bluetooth ºËĞÄÇÅ½ÓÂß¼­
- *                      - Í³Ò»ÁË±ê×¼Êó±êÓë·Ç±ê×¼(NiZ)Êó±êµÄ´¦ÀíÂß¼­
- *                      - ÓÅ»¯ÁË DATA0/DATA1 Í¬²½Î»µÄ¹ÜÀí·½Ê½
- *********************************************************************/
+/**
+ * @file usb_bridge.c
+ * @brief USB Host è½¬ Bluetooth æ¡¥æ¥é€»è¾‘
+ *
+ * ## æ¶æ„è¯´æ˜
+ *
+ * ### 1. æ¨¡å—å®šä½
+ * æœ¬æ¨¡å—å±äºç³»ç»Ÿçš„åº”ç”¨å±‚ï¼Œæ˜¯æ•´ä¸ªUSB HID to BLEé€‚é…å™¨çš„æ ¸å¿ƒæ¡¥æ¥æ¨¡å—ã€‚
+ * ä¸»è¦èŒè´£ï¼š
+ * - USBè®¾å¤‡å‘ç°å’Œæšä¸¾
+ * - USBæ•°æ®æ¥æ”¶å’Œå¤„ç†
+ * - BLEæ•°æ®å‘é€
+ * - å¤šè®¾å¤‡ç®¡ç†åè°ƒ
+ * - é”™è¯¯å¤„ç†å’Œæ¢å¤
+ *
+ * ### 2. ä¾èµ–å…³ç³»
+ * - ä¸Šå±‚è°ƒç”¨: HIDæœåŠ¡å±‚ã€BLEåè®®æ ˆ
+ * - ä¸‹å±‚ä¾èµ–:
+ *   - usb_device_manager.c: è®¾å¤‡ç®¡ç†
+ *   - error_recovery.c: é”™è¯¯æ¢å¤
+ *   - user_config.c: é…ç½®ç®¡ç†
+ *   - usb_host_common.c: USBä¸»æœºé€šç”¨å‡½æ•°
+ *   - debug.c: è°ƒè¯•æ—¥å¿—
+ * - æ•°æ®ä¾èµ–: UsbDevice_tç»“æ„ä½“ã€UserConfig_tç»“æ„ä½“
+ *
+ * ### 3. å…³é”®æ•°æ®ç»“æ„
+ * - UsbDevice_t: USBè®¾å¤‡ä¿¡æ¯ç»“æ„ä½“
+ * - UserConfig_t: ç”¨æˆ·é…ç½®ç»“æ„ä½“
+ * - RxBuffer/TxBuffer: USBæ•°æ®ç¼“å†²åŒº
+ *
+ * ### 4. æ ¸å¿ƒç®—æ³•
+ * - USBä¸»æœºäº‹åŠ¡å¤„ç†: ä½¿ç”¨USB_HostTransact()æ‰§è¡ŒINäº‹åŠ¡
+ * - DATA0/DATA1åŒæ­¥: é€šè¿‡åŒæ­¥ä½ç®¡ç†USBæ•°æ®ä¼ è¾“
+ * - é”®ç›˜æ•°æ®è§£æ: æ”¯æŒæ ‡å‡†6é”®å’ŒNKROé”®ç›˜æ ¼å¼è½¬æ¢
+ * - è®¾å¤‡å‘ç°: é€šè¿‡U2SearchTypeDevice()æŸ¥æ‰¾è®¾å¤‡
+ *
+ * ## ä½¿ç”¨æŒ‡å—
+ *
+ * ### åˆå§‹åŒ–æµç¨‹
+ * 1. è°ƒç”¨USB_Bridge_Init()è¿›è¡Œç³»ç»Ÿåˆå§‹åŒ–
+ * 2. é…ç½®ç”¨æˆ·å‚æ•°ï¼ˆé€šè¿‡UserConfig_tç»“æ„ä½“ï¼‰
+ * 3. è°ƒç”¨USB_Bridge_Poll()å¼€å§‹ä¸»å¾ªç¯å¤„ç†
+ *
+ * ### å¸¸ç”¨å‡½æ•°
+ * - USB_Bridge_Init(): ç³»ç»Ÿåˆå§‹åŒ–
+ * - USB_Bridge_Poll(): ä¸»å¾ªç¯å¤„ç†
+ * - USB_Bridge_DiscoverDevices(): è®¾å¤‡å‘ç°
+ * - USB_Bridge_ProcessDevice(): è®¾å¤‡æ•°æ®å¤„ç†
+ *
+ * ## è°ƒè¯•æŠ€å·§
+ * - ä½¿ç”¨LOG_SYS()æŸ¥çœ‹ç³»ç»Ÿæ—¥å¿—
+ * - æ£€æŸ¥é”™è¯¯æ¢å¤æœºåˆ¶æ˜¯å¦æ­£å¸¸å·¥ä½œ
+ * - ç›‘æ§è®¾å¤‡è¿æ¥çŠ¶æ€
+ *
+ * @author DIY User & AI Assistant
+ * @version V18.0 (Refactored & Optimized)
+ */
 
 #include "CH58xBLE_LIB.H"
 #include "CH58x_common.h"
 #include "debug.h"
+#include "usb_host_common.h"
+#include "user_config.h"
+#include "error_recovery.h"
+#include "usb_device_manager.h"
 
 // ===================================================================
-// ? ÓÃ»§ÅäÖÃÇø (User Configuration)
+// ? ç”¨æˆ·é…ç½® (User Configuration)
 // ===================================================================
 
-// NiZ ¼üÅÌÌØÊâ²ÎÊı
-#define NIZ_KEY_OFFSET    4       // ¼üÂëÆ«ÒÆ²¹³¥
-#define NIZ_MOUSE_ENDP    0x84    // Ç¿ÖÆÖ¸¶¨µÄÊó±ê¶Ëµã (Interface 2)
+// NiZ é”®ç›˜é…ç½®
+#define NIZ_KEY_OFFSET    4       // NiZé”®ç›˜åç§»é‡
+#define NIZ_MOUSE_ENDP    0x84    // å¼ºåˆ¶æŒ‡å®šç«¯ç‚¹åœ°å€ (Interface 2)
+// å†…å­˜ä¼˜åŒ–é…ç½®
+#define MAX_PACKET_SIZE   16      // USB HIDæœ€å¤§åŒ…å¤§å° (ä¼˜åŒ–ä¸º16å­—èŠ‚ï¼Œè¶³å¤Ÿæ”¯æŒNKROé”®ç›˜)
+#define MAX_REPORT_SIZE   8       // HIDæŠ¥å‘Šæœ€å¤§å¤§å°
 
 // ===================================================================
-// ? È«¾Ö±äÁ¿Óë»º³åÇø
+// ? å…¨å±€å˜é‡å’Œç¼“å†²åŒº
 // ===================================================================
 
-// --- USB »º³åÇø (±ØĞë 4 ×Ö½Ú¶ÔÆë) ---
+// --- USB ç¼“å†²åŒº (4å­—èŠ‚å¯¹é½) ---
 __attribute__((aligned(4))) uint8_t RxBuffer[MAX_PACKET_SIZE]; 
 __attribute__((aligned(4))) uint8_t TxBuffer[MAX_PACKET_SIZE]; 
 
-// --- ×´Ì¬±êÖ¾ ---
-volatile uint8_t Bridge_NewDevFlag = 0; // ĞÂÉè±¸²åÈëÊÂ¼ş±êÖ¾
+// --- çŠ¶æ€æ ‡å¿— ---
+volatile uint8_t Bridge_NewDevFlag = 0; // æ–°è®¾å¤‡è¿æ¥äº‹ä»¶æ ‡å¿—
 
-// --- ¼üÅÌ×´Ì¬ ---
-static uint8_t  last_kbd_report[8] = {0}; // ¼üÅÌÉÏ´ÎÊı¾İ(È¥ÖØÓÃ)
-static uint8_t  kbd_send_pending = 0;     // ¼üÅÌÁ÷¿ØÖØ·¢±êÖ¾
+// --- é”®ç›˜çŠ¶æ€ ---
+static uint8_t  last_kbd_report[MAX_REPORT_SIZE] = {0}; // ä¸Šæ¬¡æŠ¥å‘Š(å»æŠ–åŠ¨)
+static uint8_t  kbd_send_pending = 0;     // é”®ç›˜å‘é€ç­‰å¾…æ ‡å¿—
 
-// --- Êó±ê×´Ì¬ ---
-static uint8_t  last_mouse_report[4] = {0}; // Êó±êÉÏ´ÎÊı¾İ(È¥ÖØÓÃ)
+// --- é¼ æ ‡çŠ¶æ€ ---
+static uint8_t  last_mouse_report[MAX_REPORT_SIZE] = {0}; // ä¸Šæ¬¡æŠ¥å‘Š(å»æŠ–åŠ¨)
 
-// [ÓÅ»¯] NiZ Êó±ê×¨ÓÃÍ¬²½¼ÇÂ¼±äÁ¿
-// ¸ñÊ½ËµÃ÷£ºBit7=Í¬²½Î»(0=DATA0, 1=DATA1), Bit0-6=¶ËµãºÅ
-// ³õÊ¼»¯Îª 0x04 (¼´¶Ëµã4, ÆÚÍûDATA0)
+// [ä¼˜åŒ–] NiZ é¼ æ ‡ä¸“ç”¨åŒæ­¥è®°å½•å˜é‡
+// æ ¼å¼è¯´æ˜:Bit7=åŒæ­¥ä½(0=DATA0, 1=DATA1), Bit0-6=ç«¯ç‚¹åœ°å€
+// åˆå§‹å€¼ä¸º 0x04 (ç«¯ç‚¹4, ä½¿ç”¨DATA0)
 static uint8_t  Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F); 
 
 // ===================================================================
-// ? Íâ²¿º¯ÊıÒıÓÃ
+// ? å¤–éƒ¨å‡½æ•°å£°æ˜
 // ===================================================================
 extern uint8_t HidEmu_SendUSBReport(uint8_t *pData);
 extern uint8_t HidEmu_SendMouseReport(uint8_t *pData);
@@ -55,40 +111,40 @@ extern void SelectU2HubPort(uint8_t hub_port);
 
 
 // ===================================================================
-// ?? ¸¨Öúº¯Êı£ºÊı¾İ½âÎöÓëµ÷ÊÔ
+// ? é”®ç›˜æ•°æ®è§£æå‡½æ•°
 // ===================================================================
 
 
 
 /**
- * @brief  ¼üÅÌÊı¾İ½âÎö (¼æÈİ±ê×¼6¼üÓëNKRO)
- * @param  in_buf   USB½ÓÊÕµ½µÄÔ­Ê¼Êı¾İ
- * @param  len      Êı¾İ³¤¶È
- * @param  out_buf  Êä³öµÄ±ê×¼8×Ö½Ú HID ±¨ÎÄ
+ * @brief  é”®ç›˜æ•°æ®è§£æ (æ”¯æŒæ ‡å‡†6é”®å’ŒNKRO)
+ * @param  in_buf   USBæ”¶åˆ°çš„åŸå§‹æ•°æ®
+ * @param  len      æ•°æ®é•¿åº¦
+ * @param  out_buf  è¾“å‡ºçš„æ ‡å‡†8å­—èŠ‚ HID æŠ¥å‘Š
  */
 void Parse_Keyboard_Data(uint8_t* in_buf, uint8_t len, uint8_t* out_buf) {
     memset(out_buf, 0, 8);
     
-    // Çé¿ö1: ±ê×¼ 8 ×Ö½Ú Boot Keyboard ±¨ÎÄ
+    // æƒ…å†µ1: æ ‡å‡† 8 å­—èŠ‚ Boot Keyboard æ ¼å¼
     if (len == 8) {
         memcpy(out_buf, in_buf, 8);
         return;
     }
-    
-    // Çé¿ö2: NiZ µÈ NKRO ±ä³¤±¨ÎÄ (Î»Í¼×ª±ê×¼¼üÂë)
+
+    // æƒ…å†µ2: NiZ æˆ– NKRO é•¿æ ¼å¼ (ä½å›¾è½¬æ¢ä¸ºæ ‡å‡†æ ¼å¼)
     if (len > 8) {
-        out_buf[0] = in_buf[0]; // ¸´ÖÆĞŞÊÎ¼ü (Ctrl/Shift/Alt/Win)
+        out_buf[0] = in_buf[0]; // åŠŸèƒ½é”®åŒº (Ctrl/Shift/Alt/Win)
         int key_slot = 0;
-        
-        // ±éÀúÎ»Í¼Êı¾İ (´ÓµÚ2×Ö½Ú¿ªÊ¼)
+
+        // è§£æä½å›¾æ•°æ® (ä»ç¬¬2å­—èŠ‚å¼€å§‹)
         for (int i = 2; i < len; i++) {
             if (in_buf[i] != 0) {
                 for (int bit = 0; bit < 8; bit++) {
                     if ((in_buf[i] >> bit) & 0x01) {
-                        // ¼ÆËã¼üÂë²¢¼ÓÉÏÆ«ÒÆÁ¿
+                        // è®¡ç®—é”®ç å¹¶æ·»åŠ åç§»é‡
                         uint8_t keycode = (i - 2) * 8 + bit + NIZ_KEY_OFFSET;
-                        
-                        // Ìî³äµ½ 6 ¸ö°´¼ü²ÛÎ»ÖĞ
+
+                        // å¡«å……åˆ° 6 ä¸ªæŒ‰é”®ä½ç½®
                         if (keycode > 3 && keycode < 255 && key_slot < 6) {
                             out_buf[2 + key_slot] = keycode;
                             key_slot++;
@@ -102,204 +158,357 @@ void Parse_Keyboard_Data(uint8_t* in_buf, uint8_t len, uint8_t* out_buf) {
 
 
 // ===================================================================
-// ? ºËĞÄÂß¼­
+// ? è®¾å¤‡å‘ç°å’Œç®¡ç†å‡½æ•°
+// ===================================================================
+
+/**
+ * @brief  å‘ç°å¹¶æ·»åŠ æ–°è®¾å¤‡åˆ°è®¾å¤‡ç®¡ç†å™¨
+ */
+void USB_Bridge_DiscoverDevices(void)
+{
+    uint16_t search_res;
+    uint8_t dev_addr, dev_type, endpoint;
+
+    // æŸ¥æ‰¾é”®ç›˜è®¾å¤‡
+    search_res = U2SearchTypeDevice(DEV_TYPE_KEYBOARD);
+    if (search_res != 0xFFFF) {
+        dev_addr = (uint8_t)(search_res >> 8); // HUBç«¯å£å·
+        uint8_t interface = (uint8_t)search_res; // æ¥å£å·
+
+        // è·å–ç«¯ç‚¹åœ°å€
+        endpoint = GetEndpointFromDevice(interface, 0); // 0 = é”®ç›˜è®¾å¤‡
+
+        if (IsEndpointValid(endpoint)) {
+            // æ£€æŸ¥è®¾å¤‡æ˜¯å¦å·²å­˜åœ¨
+            uint8_t dev_index = UsbDeviceManager_FindDeviceByType(DEV_TYPE_KEYBOARD);
+            if (dev_index == 0xFF) {
+                // è®¾å¤‡ä¸å­˜åœ¨ï¼Œæ·»åŠ æ–°è®¾å¤‡
+                dev_index = UsbDeviceManager_AddDevice(dev_addr, DEV_TYPE_KEYBOARD, endpoint);
+                if (dev_index != 0xFF) {
+                    LOG_SYS("Keyboard device added: index=%u\n", dev_index);
+                }
+            }
+        }
+    }
+
+    // æŸ¥æ‰¾é¼ æ ‡è®¾å¤‡
+    search_res = U2SearchTypeDevice(DEV_TYPE_MOUSE);
+    if (search_res != 0xFFFF) {
+        dev_addr = (uint8_t)(search_res); // HUBç«¯å£å·
+        uint8_t interface = 1; // é¼ æ ‡è®¾å¤‡é€šå¸¸ä½¿ç”¨æ¥å£1
+
+        // è·å–ç«¯ç‚¹åœ°å€
+        endpoint = GetEndpointFromDevice(interface, 1); // 1 = é¼ æ ‡è®¾å¤‡
+
+        if (IsEndpointValid(endpoint)) {
+            // æ£€æŸ¥è®¾å¤‡æ˜¯å¦å·²å­˜åœ¨
+            uint8_t dev_index = UsbDeviceManager_FindDeviceByType(DEV_TYPE_MOUSE);
+            if (dev_index == 0xFF) {
+                // è®¾å¤‡ä¸å­˜åœ¨ï¼Œæ·»åŠ æ–°è®¾å¤‡
+                dev_index = UsbDeviceManager_AddDevice(dev_addr, DEV_TYPE_MOUSE, endpoint);
+                if (dev_index != 0xFF) {
+                    LOG_SYS("Mouse device added: index=%u\n", dev_index);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief  å¤„ç†å•ä¸ªè®¾å¤‡çš„æ•°æ®è¯»å–
+ * @param  dev_index  è®¾å¤‡ç´¢å¼•
+ * @return 1=æˆåŠŸè¯»å–æ•°æ®, 0=å¤±è´¥æˆ–æ— æ•°æ®
+ */
+uint8_t USB_Bridge_ProcessDevice(uint8_t dev_index)
+{
+    UsbDevice_t* p_device = UsbDeviceManager_GetDevice(dev_index);
+    if (p_device == NULL) {
+        return 0;
+    }
+
+    if (!p_device->is_connected || !p_device->is_valid) {
+        return 0;
+    }
+
+    uint8_t s, len;
+    uint8_t endp_addr = p_device->endpoint;
+
+    // é€‰æ‹©è®¾å¤‡ç«¯å£
+    SelectU2HubPort(p_device->dev_addr);
+
+    // æ‰§è¡Œ IN äº‹åŠ¡
+    // ç«¯ç‚¹åœ°å€çš„ Bit7 ä¼šè‡ªåŠ¨æŒ‡ç¤ºæ˜¯å¦éœ€è¦ DATA0 æˆ– DATA1
+    s = USB_HostTransact(endp_addr, Endpoint_GetToggleFlag(endp_addr), 0);
+
+    if (s == ERR_SUCCESS) {
+        // æˆåŠŸï¼Œç¿»è½¬åŒæ­¥ä½ (Bit7)
+        endp_addr = Endpoint_SyncToggle(endp_addr);
+
+        // æ›´æ–°è®¾å¤‡ç®¡ç†å™¨ä¸­çš„ç«¯ç‚¹åœ°å€
+        p_device->endpoint = endp_addr;
+
+        len = R8_USB2_RX_LEN;
+        if (len > 0) {
+            if (p_device->dev_type == DEV_TYPE_KEYBOARD) {
+                // å¤„ç†é”®ç›˜æ•°æ®
+                uint8_t temp_report[MAX_REPORT_SIZE] = {0};
+                Parse_Keyboard_Data(RxBuffer, len, temp_report);
+                DBG_KEYS(temp_report);
+
+                // æ›´æ–°è®¾å¤‡æŠ¥å‘Šç¼“å†²åŒº
+                UsbDeviceManager_UpdateReport(dev_index, temp_report, 8);
+
+                // å‘é€BLEæŠ¥å‘Š
+                if (HidEmu_SendUSBReport(temp_report) != SUCCESS) {
+                    // å‘é€å¤±è´¥ï¼Œè®°å½•é”™è¯¯
+                    ErrorStats_USBCommFail();
+                }
+            }
+            else if (p_device->dev_type == DEV_TYPE_MOUSE) {
+                // å¤„ç†é¼ æ ‡æ•°æ®
+                uint8_t mouse_data[MAX_REPORT_SIZE] = {0};
+
+                // --- åè®®é€‚é… ---
+                if (len == 5) {
+                    // NiZ æ ¼å¼: [ID, Btn, X, Y, Wheel] -> åç§»1å­—èŠ‚
+                    memcpy(mouse_data, RxBuffer + 1, 4);
+                } else if (len >= 7) {
+                    // æ ‡å‡†æ ¼å¼
+                    mouse_data[0] = RxBuffer[1]; // Btn
+                    mouse_data[1] = RxBuffer[2]; // X
+                    mouse_data[2] = RxBuffer[4]; // Y
+                    mouse_data[3] = RxBuffer[6]; // Wheel
+                } else if (len == 3) {
+                    // æ ‡å‡†é¼ æ ‡æ ¼å¼: [Btn, X, Y]
+                    memcpy(mouse_data, RxBuffer, 3);
+                } else if (len == 4) {
+                    // æŸäº›å¸¦ ID çš„ 4 å­—èŠ‚æ ¼å¼
+                    if (RxBuffer[0] <= 5) memcpy(mouse_data, RxBuffer + 1, 3);
+                    else memcpy(mouse_data, RxBuffer, 4);
+                }
+
+                DBG_MOUSE(mouse_data);
+
+                // æ›´æ–°è®¾å¤‡æŠ¥å‘Šç¼“å†²åŒº
+                UsbDeviceManager_UpdateReport(dev_index, mouse_data, 4);
+
+                // å‘é€BLEæŠ¥å‘Šï¼ˆé¼ æ ‡ä¸éœ€è¦é‡è¯•æœºåˆ¶ï¼Œç¡®ä¿å®æ—¶æ€§ï¼‰
+                HidEmu_SendMouseReport(mouse_data);
+            }
+
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief  æ£€æŸ¥è®¾å¤‡è¿æ¥çŠ¶æ€
+ * @param  dev_index  è®¾å¤‡ç´¢å¼•
+ * @return 1=è®¾å¤‡æ–­å¼€, 0=è®¾å¤‡æ­£å¸¸
+ */
+uint8_t USB_Bridge_CheckDeviceDisconnect(uint8_t dev_index)
+{
+    UsbDevice_t* p_device = UsbDeviceManager_GetDevice(dev_index);
+    if (p_device == NULL) {
+        return 0;
+    }
+
+    // æ£€æŸ¥è®¾å¤‡çŠ¶æ€
+    if (ThisUsb2Dev.DeviceStatus == ROOT_DEV_DISCONNECTED) {
+        return 1;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief  ç§»é™¤æ–­å¼€çš„è®¾å¤‡
+ */
+void USB_Bridge_RemoveDisconnectedDevices(void)
+{
+    for (uint8_t i = 0; i < MAX_USB_DEVICES; i++) {
+        if (UsbDeviceManager_IsValid(i)) {
+            if (USB_Bridge_CheckDeviceDisconnect(i)) {
+                UsbDeviceManager_RemoveDevice(i);
+            }
+        }
+    }
+}
+
+// ===================================================================
+// ? ï¿½ï¿½ï¿½ï¿½ï¿½ß¼ï¿½
 // ===================================================================
 
 void USB_Bridge_Init(void) {
-    // 1. Ó²¼ş IO ³õÊ¼»¯ (¿ªÆô USB ¹©µç)
+    // 1. Ó²ï¿½ï¿½ IO ï¿½ï¿½Ê¼ï¿½ï¿½ (ï¿½ï¿½ï¿½ï¿½ USB ï¿½ï¿½ï¿½ï¿½)
     GPIOA_SetBits(GPIO_Pin_9);
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
     
-    // 2. °ó¶¨ USB RAM
+    // 2. ï¿½ï¿½ USB RAM
     pU2HOST_RX_RAM_Addr = RxBuffer;
     pU2HOST_TX_RAM_Addr = TxBuffer;
     
-    // 3. ³õÊ¼»¯Ğ­ÒéÕ»
+    // 3. ï¿½ï¿½Ê¼ï¿½ï¿½Ğ­ï¿½ï¿½Õ»
     USB2_HostInit();
     
     Bridge_NewDevFlag = 0;
     kbd_send_pending = 0;
     
-    // ³õÊ¼»¯ NiZ ¼ÇÂ¼±äÁ¿ (Çå³ı DATA1 ±êÖ¾£¬Ö»±£Áô¶ËµãºÅ)
+    // ï¿½ï¿½Ê¼ï¿½ï¿½ NiZ ï¿½ï¿½Â¼ï¿½ï¿½ï¿½ï¿½ (ï¿½ï¿½ï¿½ DATA1 ï¿½ï¿½Ö¾ï¿½ï¿½Ö»ï¿½ï¿½ï¿½ï¿½ï¿½Ëµï¿½ï¿½)
     Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F);
-    
+
+    // 4. ï¿½ï¿½Ê¼ï¿½ï¿½ÏµÍ³ï¿½ï¿½Í³
+    ErrorStats_Init();
+
+    // 5. ï¿½ï¿½Ê¼ï¿½ï¿½ USB ï¿½ï¿½ï¿½
+    USBReconnect_Init();
+
+    // 6. ï¿½ï¿½Ê¼ï¿½ï¿½ BLE ï¿½ï¿½ï¿½
+    BLEReconnect_Init();
+
+    // 7. ï¿½ï¿½Ê¼ï¿½ï¿½ Configuration
+    USB_Bridge_ConfigInit();
+
+    // 8. ï¿½ï¿½Ê¼ï¿½ï¿½ USB è±¸ï¿½ï¿½ï¿½
+    UsbDeviceManager_Init();
+
     LOG_SYS("USB Init OK. Bridge Ready.\n");
 }
 
+/**
+ * @brief USBæ¡¥æ¥ä¸»å¾ªç¯å¤„ç†å‡½æ•°
+ *
+ * @details
+ * #### åŠŸèƒ½è¯¦ç»†è¯´æ˜
+ * è¿™æ˜¯USBæ¡¥æ¥æ¨¡å—çš„ä¸»å¾ªç¯å‡½æ•°ï¼Œè´Ÿè´£å¤„ç†æ‰€æœ‰USBè®¾å¤‡çš„æ•°æ®ä¼ è¾“å’Œç®¡ç†ã€‚
+ * è¯¥å‡½æ•°åº”è¯¥åœ¨ç³»ç»Ÿä¸»å¾ªç¯ä¸­å®šæœŸè°ƒç”¨ï¼Œä»¥ç¡®ä¿USBè®¾å¤‡çš„æ­£å¸¸å·¥ä½œã€‚
+ *
+ * #### ç®—æ³•åŸç†
+ * 1. **é”®ç›˜é‡å‘å¤„ç†**ï¼š
+ *    - æ£€æŸ¥kbd_send_pendingæ ‡å¿—ï¼Œå¦‚æœä¸º1è¡¨ç¤ºä¸Šæ¬¡é”®ç›˜å‘é€å¤±è´¥
+ *    - å°è¯•é‡æ–°å‘é€ä¸Šæ¬¡çš„é”®ç›˜æŠ¥å‘Š
+ *    - å¦‚æœæˆåŠŸï¼Œæ¸…é™¤æ ‡å¿—ï¼›å¦‚æœä»ç„¶å¤±è´¥ï¼Œè¿”å›ç­‰å¾…ä¸‹æ¬¡é‡è¯•
+ *
+ * 2. **USBç¡¬ä»¶ä¸­æ–­å¤„ç†**ï¼š
+ *    - æ£€æµ‹USBè®¾å¤‡è¿æ¥/æ–­å¼€äº‹ä»¶
+ *    - å¤„ç†USBæšä¸¾å®Œæˆäº‹ä»¶
+ *    - æ›´æ–°è®¾å¤‡çŠ¶æ€æ ‡å¿—
+ *
+ * 3. **æ–°è®¾å¤‡è¿æ¥å¤„ç†**ï¼š
+ *    - å½“æ£€æµ‹åˆ°æ–°è®¾å¤‡è¿æ¥æ—¶ï¼Œåˆå§‹åŒ–USBè®¾å¤‡
+ *    - é…ç½®è®¾å¤‡å‚æ•°ï¼Œæ¢å¤åŒæ­¥ä½çŠ¶æ€
+ *    - è®°å½•è®¾å¤‡è¿æ¥æ—¥å¿—
+ *
+ * 4. **è®¾å¤‡è½®è¯¢å¤„ç†**ï¼š
+ *    - éå†æ‰€æœ‰å·²è¿æ¥çš„USBè®¾å¤‡
+ *    - å¯¹æ¯ä¸ªè®¾å¤‡æ‰§è¡Œæ•°æ®è¯»å–å’Œå¤„ç†
+ *    - å°†å¤„ç†åçš„æ•°æ®å‘é€åˆ°BLE
+ *
+ * #### è°ƒç”¨ç¤ºä¾‹
+ * ```c
+ * // åœ¨ä¸»å¾ªç¯ä¸­è°ƒç”¨
+ * while(1) {
+ *     USB_Bridge_Poll();
+ *     // å…¶ä»–ä»»åŠ¡å¤„ç†
+ *     Delay_ms(1);
+ * }
+ * ```
+ *
+ * #### ä½¿ç”¨åœºæ™¯
+ * - ç³»ç»Ÿä¸»å¾ªç¯ä¸­å®šæœŸè°ƒç”¨
+ * - USBè®¾å¤‡æ•°æ®ä¼ è¾“å¤„ç†
+ * - è®¾å¤‡çŠ¶æ€ç›‘æ§
+ *
+ * #### é”™è¯¯å¤„ç†
+ * - é”®ç›˜å‘é€å¤±è´¥ï¼šè®¾ç½®kbd_send_pendingæ ‡å¿—ï¼Œä¸‹æ¬¡é‡è¯•
+ * - USBè®¾å¤‡æ–­å¼€ï¼šè‡ªåŠ¨ç§»é™¤è®¾å¤‡ï¼Œæ›´æ–°è®¾å¤‡ç®¡ç†å™¨
+ * - æ•°æ®è¯»å–å¤±è´¥ï¼šè·³è¿‡å½“å‰è®¾å¤‡ï¼Œç»§ç»­å¤„ç†ä¸‹ä¸€ä¸ªè®¾å¤‡
+ *
+ * #### è¾¹ç•Œæƒ…å†µ
+ * - æ— è®¾å¤‡è¿æ¥ï¼šç›´æ¥è¿”å›ï¼Œä¸æ‰§è¡Œè®¾å¤‡å¤„ç†
+ * - è®¾å¤‡å¿™ï¼šè·³è¿‡å½“å‰è®¾å¤‡ï¼Œç»§ç»­å¤„ç†ä¸‹ä¸€ä¸ªè®¾å¤‡
+ * - å†…å­˜ä¸è¶³ï¼šè®¾å¤‡ç®¡ç†å™¨ä¼šè¿”å›é”™è¯¯ï¼Œè·³è¿‡è®¾å¤‡æ·»åŠ 
+ *
+ * #### æ³¨æ„äº‹é¡¹
+ * - å¿…é¡»å®šæœŸè°ƒç”¨ï¼Œå»ºè®®è°ƒç”¨é—´éš”ä¸è¶…è¿‡10ms
+ * - ä¸è¦åœ¨ä¸­æ–­ä¸Šä¸‹æ–‡ä¸­è°ƒç”¨
+ * - ç¡®ä¿ç³»ç»Ÿæ—¶é’Ÿæ­£å¸¸å·¥ä½œ
+ */
 void USB_Bridge_Poll(void) {
     uint8_t s, len, endp_addr;
     uint16_t search_res;
     
     // --------------------------------------------------------
-    // [ÈÎÎñ 0] ¼üÅÌÁ÷¿Ø´¦Àí
-    // Èç¹ûÉÏ´Î·¢ËÍÊ§°Ü£¨À¶ÑÀÃ¦£©£¬ÓÅÏÈÖØÊÔ£¬±£Ö¤°´¼ü²»¶ªÊ§
+    // [æ­¥éª¤ 0] é”®ç›˜é‡å‘å¤„ç†
+    // å¦‚æœä¸Šæ¬¡å‘é€å¤±è´¥ï¼Œè®¾å¤‡å¿™ï¼Œåˆ™é‡è¯•å‘é€ï¼Œç¡®ä¿æ•°æ®ä¸ä¸¢å¤±
     // --------------------------------------------------------
     if (kbd_send_pending) {
         if (HidEmu_SendUSBReport(last_kbd_report) == SUCCESS) {
-            kbd_send_pending = 0; // ·¢ËÍ³É¹¦£¬Çå³ı±êÖ¾
+            kbd_send_pending = 0; // å‘é€æˆåŠŸï¼Œæ¸…é™¤æ ‡å¿—
             LOG_BLE("KBD Resend OK\n");
         } else {
-            return; // ÒÀÈ»Ã¦£¬ÔİÍ£±¾ÂÖ´¦Àí
+            return; // ä»ç„¶å¿™ï¼Œå‘é€ï¼Œç»§ç»­æ‰§è¡Œ
         }
     }
 
     // --------------------------------------------------------
-    // [ÈÎÎñ 1] Ó²¼ş²å°Î¼ì²âÓëÉè±¸Ã¶¾Ù
+    // [æ­¥éª¤ 1] ç¡¬ä»¶ä¸­æ–­å¤„ç†ï¼Œè®¾å¤‡æšä¸¾
     // --------------------------------------------------------
     if(R8_USB2_INT_FG & RB_UIF_DETECT) {
-        R8_USB2_INT_FG = RB_UIF_DETECT; // ÇåÖĞ¶Ï
+        R8_USB2_INT_FG = RB_UIF_DETECT; // æ¸…é™¤ä¸­æ–­
         s = AnalyzeRootU2Hub();
         if(s == ERR_USB_CONNECT) Bridge_NewDevFlag = 1;
         else if (s == ERR_USB_DISCON) Bridge_NewDevFlag = 0;
     }
-    // ·ÀÖ¹ÆäËûÔÓÏîÖĞ¶Ï¿¨ËÀ
-    else if (R8_USB2_INT_FG) { 
-        R8_USB2_INT_FG = 0xFF; 
+    // é˜²æ­¢å…¶ä»–æ„å¤–ä¸­æ–­å¹²æ‰°
+    else if (R8_USB2_INT_FG) {
+        R8_USB2_INT_FG = 0xFF;
     }
 
-    // ´¦ÀíĞÂÉè±¸²åÈë
+    // æ–°è®¾å¤‡è¿æ¥å¤„ç†
     if(Bridge_NewDevFlag) {
         Bridge_NewDevFlag = 0;
-        mDelaymS(200); // µÈ´ıÉè±¸µçÔ´ÎÈ¶¨
+        mDelaymS(200); // ç­‰å¾…è®¾å¤‡ç”µæºç¨³å®š
         s = InitRootU2Device();
         if(s == ERR_SUCCESS){
             LOG_SYS("Device Enum OK\n");
-            // ¡¾ÖØÒª¡¿Éè±¸ÖØĞÂ²åÈëºó£¬±ØĞëÖØÖÃ NiZ Êó±êµÄÍ¬²½Î»
-            // »Ö¸´Îª 0x04 (Bit7=0 ±íÊ¾ÏÂ´ÎÆÚÍû DATA0)
+            // æ–°è®¾å¤‡éœ€è¦é‡æ–°é…ç½®ï¼Œç‰¹åˆ«æ˜¯ NiZ é¼ æ ‡åŒæ­¥ä½
+            // æ¢å¤ä¸º 0x04 (Bit7=0 è¡¨ç¤ºä¸‹æ¬¡ä¼ è¾“ DATA0)
             Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F);
-        } 
+        }
     }
 
-    // ÖÜÆÚĞÔÎ¬»¤ HUB ×´Ì¬ (Èç¹ûÓĞ HUB)
+    // ç»´æŠ¤ HUB çŠ¶æ€ (å¦‚æœæ˜¯ HUB)
     EnumAllU2HubPort(); 
 
     // =================================================================
-    // [ÈÎÎñ 2] ¶ÁÈ¡¼üÅÌÊı¾İ
+    // [æ­¥éª¤ 2] è®¾å¤‡å‘ç°
     // =================================================================
-    search_res = U2SearchTypeDevice(DEV_TYPE_KEYBOARD);
-    if(search_res != 0xFFFF)
-    {
-        uint8_t dev_addr = (uint8_t)(search_res >> 8); // HUB¶Ë¿ÚºÅ
-        len = (uint8_t)search_res;                     // ½Ó¿ÚºÅ
-        SelectU2HubPort(len); 
-        
-        // »ñÈ¡¹Ù·½¿âÎ¬»¤µÄ¶Ëµã¼ÇÂ¼
-        endp_addr = len ? DevOnU2HubPort[len - 1].GpVar[0] : ThisUsb2Dev.GpVar[0];
+    // å‘ç°æ–°è®¾å¤‡
+    USB_Bridge_DiscoverDevices();
 
-        // Ö»ÓĞ¶ËµãÓĞĞ§²ÅÍ¨Ñ¶
-        if(endp_addr & USB_ENDP_ADDR_MASK)
-        {
-            // Ö´ĞĞ IN ÊÂÎñ
-            // ¸ù¾İ¶Ëµã±äÁ¿µÄ Bit7 ×Ô¶¯¾ö¶¨ÊÇ·¢ DATA0 »¹ÊÇ DATA1
-            s = USB2HostTransact(USB_PID_IN << 4 | (endp_addr & 0x7F), 
-                                 (endp_addr & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0, 0);
+    // =================================================================
+    // [æ­¥éª¤ 3] è®¾å¤‡æ¸…ç†
+    // =================================================================
+    // æ¸…ç†æ–­å¼€çš„è®¾å¤‡
+    USB_Bridge_RemoveDisconnectedDevices();
 
-            if(s == ERR_SUCCESS)
-            {
-                // ³É¹¦ºó·­×ªÍ¬²½Î» (Bit7)
-                endp_addr ^= 0x80;
-                // Ğ´»Ø¹Ù·½¿â½á¹¹Ìå
-                if(len) DevOnU2HubPort[len - 1].GpVar[0] = endp_addr;
-                else    ThisUsb2Dev.GpVar[0] = endp_addr;
-
-                len = R8_USB2_RX_LEN;
-                if(len > 0) 
-                {
-                    uint8_t temp_report[8] = {0};
-                    Parse_Keyboard_Data(RxBuffer, len, temp_report);
-                    DBG_KEYS(temp_report);
-                    
-                    memcpy(last_kbd_report, temp_report, 8);
-                    
-                    // ·¢ËÍ¸øÀ¶ÑÀ
-                    if (HidEmu_SendUSBReport(last_kbd_report) != SUCCESS) {
-                        kbd_send_pending = 1; // ±ê¼Ç´ıÖØ·¢
-                    }
-                }
-            }
+    // =================================================================
+    // [æ­¥éª¤ 4] è®¾å¤‡è½®è¯¢
+    // =================================================================
+    // è½®è¯¢æ‰€æœ‰è®¾å¤‡
+    for (uint8_t i = 0; i < MAX_USB_DEVICES; i++) {
+        if (UsbDeviceManager_IsValid(i)) {
+            USB_Bridge_ProcessDevice(i);
         }
     }
 
     // =================================================================
-    // [ÈÎÎñ 3] ¶ÁÈ¡Êó±êÊı¾İ (Í³Ò»Âß¼­ÓÅ»¯°æ)
+    // [æ­¥éª¤ 4] é”™è¯¯æ¢å¤
     // =================================================================
-    
-    // ¶¨ÒåÒ»¸öÖ¸Õë£¬Ö¸Ïò¡°ÎÒÃÇÒª²Ù×÷µÄÄÇ¸ö¶Ëµã¼ÇÂ¼±äÁ¿¡±
-    // ÎŞÂÛÊÇ¹Ù·½¿â¹ÜÀíµÄ±ê×¼Êó±ê£¬»¹ÊÇÎÒÃÇ×Ô¼º¹ÜÀíµÄ NiZ Êó±ê£¬¶¼Í¨¹ıÕâ¸öÖ¸Õë²Ù×÷
-    uint8_t *p_mouse_toggle_record = NULL; 
-    uint8_t current_record_val = 0;
-
-    // A. ³¢ÊÔÑ°ÕÒ±ê×¼Êó±ê
-    search_res = U2SearchTypeDevice(DEV_TYPE_MOUSE);
-    if (search_res != 0xFFFF) {
-        uint8_t hub_port = (uint8_t)search_res; 
-        SelectU2HubPort(hub_port); // ÎïÀíÑ¡ÖĞ¶Ë¿Ú
-        
-        // Ö¸Ïò¹Ù·½¿â½á¹¹ÌåÖĞµÄ±äÁ¿
-        if (hub_port) p_mouse_toggle_record = &DevOnU2HubPort[hub_port - 1].GpVar[0];
-        else          p_mouse_toggle_record = &ThisUsb2Dev.GpVar[0];
-    } 
-    // B. Èç¹ûÃ»ÕÒµ½±ê×¼Êó±ê£¬ÇÒÉè±¸ÒÑÃ¶¾Ù£¬³¢ÊÔÇ¿ÖÆ¶ÁÈ¡ NiZ ½Ó¿Ú
-    else if (ThisUsb2Dev.DeviceStatus >= ROOT_DEV_SUCCESS) {
-        SelectU2HubPort(0); // ¡¾¹Ø¼ü¡¿È·±£²Ù×÷¶ÔÏóÊÇ¸ù¶Ë¿ÚÉè±¸
-        // Ö¸ÏòÎÒÃÇ×Ô¼º¶¨ÒåµÄÈ«¾Ö±äÁ¿
-        p_mouse_toggle_record = &Var_NizMouse_Record;
-    }
-
-    // Èç¹ûÈ·¶¨ÁËÄ¿±ê£¬¿ªÊ¼´«Êä
-    if (p_mouse_toggle_record != NULL)
-    {
-        current_record_val = *p_mouse_toggle_record;
-        
-        // Èç¹û¶ËµãºÅÎª0£¬ËµÃ÷Éè±¸Î´ÕıÈ·³õÊ¼»¯£¬Ìø¹ı
-        if ((current_record_val & 0x7F) != 0) {
-            
-            // ¼ÆËã DATA0/1 ±êÖ¾
-            // Bit7 == 1 -> RB_UH_R_TOG | RB_UH_T_TOG (·¢ËÍDATA1)
-            // Bit7 == 0 -> 0                         (·¢ËÍDATA0)
-            uint8_t token_pid = (current_record_val & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0;
-            
-            // ·¢Æğ´«Êä
-            s = USB2HostTransact(USB_PID_IN << 4 | (current_record_val & 0x7F), token_pid, 0);
-
-            if(s == ERR_SUCCESS)
-            {
-                // 1. ¸üĞÂÍ¬²½Î»£ºÖ±½Ó·­×ªÄÚ´æÖĞµÄ Bit7
-                // ÕâÑùÏÂÒ»´ÎÑ­»·¶ÁÈ¡Ê±£¬¾Í»á×Ô¶¯ÇĞ»»µ½Ïà·´µÄ DATA ×´Ì¬
-                *p_mouse_toggle_record ^= 0x80;
-
-                // 2. ½âÎöÊı¾İ
-                len = R8_USB2_RX_LEN;
-                if(len >= 3) 
-                {
-                    uint8_t mouse_data[4] = {0}; 
-                    
-                    // --- Ğ­ÒéÊÊÅäÇø ---
-                    if (len == 5) {
-                        // NiZ ¸ñÊ½: [ID, Btn, X, Y, Wheel] -> Æ«ÒÆ1×Ö½Ú
-                        memcpy(mouse_data, RxBuffer + 1, 4); 
-                    } else if (len >= 7) {
-                        // ¸´ÔÓÊó±ê¸ñÊ½
-                        mouse_data[0] = RxBuffer[1]; // Btn
-                        mouse_data[1] = RxBuffer[2]; // X
-                        mouse_data[2] = RxBuffer[4]; // Y
-                        mouse_data[3] = RxBuffer[6]; // Wheel
-                    } else if (len == 3) {
-                        // ±ê×¼»ù´¡¸ñÊ½: [Btn, X, Y]
-                        memcpy(mouse_data, RxBuffer, 3); 
-                    } else if (len == 4) {
-                        // Ä³Ğ©´ø ID µÄ 4 ×Ö½Ú¸ñÊ½
-                        if (RxBuffer[0] <= 5) memcpy(mouse_data, RxBuffer + 1, 3);
-                        else memcpy(mouse_data, RxBuffer, 4);
-                    }
-
-                    // --- ·¢ËÍ´¦Àí ---
-                    DBG_MOUSE(mouse_data);
-                    
-                    // Êó±êÊı¾İÁ¿´ó£¬²»ĞèÒªÖØ·¢»úÖÆ£¬À¶ÑÀÃ¦Ôò¶ªÆúÒÔ±£Ö¤ÊµÊ±ĞÔ
-                    HidEmu_SendMouseReport(mouse_data);
-                }
-            }
-        }
-    }
+    // é”™è¯¯æ¢å¤è½®è¯¢ (è·å–ç³»ç»Ÿæ—¶é—´)
+    // é”™è¯¯æ¢å¤ç»Ÿè®¡å’Œ USB/BLE é‡è¿
+    ErrorRecovery_Poll(1); // 1ms tick
 }
