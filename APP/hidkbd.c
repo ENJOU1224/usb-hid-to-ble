@@ -84,6 +84,9 @@ static uint16_t hidEmuConnHandle = GAP_CONNHANDLE_INIT; // 连接句柄
 static uint8_t      last_batt_percent = 0;          // 上次上报的电量
 static signed short ADC_RoughCalib_Value = 0;       // ADC 校准偏移值
 
+// 记录SYS灯是否还在上电前10秒的长亮状态
+static uint8_t is_sys_led_startup = TRUE;
+
 // --- 放电曲线表 (mV -> %) ---
 // 线性插值查表法，更符合锂电池放电特性
 typedef struct { uint16_t mv; uint8_t pct; } BattMap;
@@ -133,6 +136,21 @@ static hidDevCB_t hidEmuHidCBs = {
 void HidEmu_Init()
 {
     hidEmuTaskId = TMOS_ProcessEventRegister(HidEmu_ProcessEvent);
+    // 1. 初始化 LED 引脚 (推挽输出)
+    GPIOA_ModeCfg(SYS_LED_PIN | BLE_LED_PIN, GPIO_ModeOut_PP_5mA);
+    
+    // 2. 初始化 USER 按键 (上拉输入)
+    GPIOB_ModeCfg(USER_KEY_PIN, GPIO_ModeIN_PU);
+
+    // 3. 上电时 SYS 长亮 10 秒
+    is_sys_led_startup = TRUE;
+    SYS_LED_ON();   // 点亮 SYS
+    BLE_LED_OFF();  // 熄灭 BLE
+
+    tmos_start_task(hidEmuTaskId, HID_SYS_LED_OFF_EVT, 1600 * 10); 
+
+    // 4. 启动按键轮询
+    tmos_start_task(hidEmuTaskId, HID_USER_KEY_POLL_EVT, 160);
 
     // 1. GAP 广播与通用配置
     {
@@ -179,6 +197,7 @@ void HidEmu_Init()
 
     // 5. 启动设备主事件
     tmos_set_event(hidEmuTaskId, START_DEVICE_EVT);
+    
 }
 
 // ===================================================================
@@ -186,6 +205,53 @@ void HidEmu_Init()
 // ===================================================================
 uint16_t HidEmu_ProcessEvent(uint8_t task_id, uint16_t events)
 {
+    // --- LED 与按键处理
+    // [SYS] 10秒定时结束，熄灭 SYS
+    if (events & HID_SYS_LED_OFF_EVT) {
+        is_sys_led_startup = FALSE;
+        SYS_LED_OFF(); 
+        return (events ^ HID_SYS_LED_OFF_EVT);
+    }
+
+    // [SYS] 低电平闪烁翻转
+    if (events & HID_SYS_LED_BLINK_EVT) {
+        SYS_LED_TOGGLE(); 
+        tmos_start_task(hidEmuTaskId, HID_SYS_LED_BLINK_EVT, 1600 * 1); // 1秒闪一次
+        return (events ^ HID_SYS_LED_BLINK_EVT);
+    }
+
+    // [BLE] 10秒定时结束，熄灭 BLE
+    if (events & HID_BLE_LED_OFF_EVT) {
+        BLE_LED_OFF(); 
+        return (events ^ HID_BLE_LED_OFF_EVT);
+    }
+
+    // [BLE] 未连接时闪烁翻转
+    if (events & HID_BLE_LED_BLINK_EVT) {
+        BLE_LED_TOGGLE();
+        tmos_start_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT, 1600 * 0.5); // 0.5秒闪一次
+        return (events ^ HID_BLE_LED_BLINK_EVT);
+    }
+
+    // [USER 按键] 按键轮询与断开连接
+    if (events & HID_USER_KEY_POLL_EVT) {
+        static uint8_t key_last_state = 1;
+        uint8_t key_current = READ_USER_KEY();
+        
+        // 检测下降沿 (按下)
+        if (key_last_state == 1 && key_current == 0) {
+            uint8_t gap_state;
+            GAPRole_GetParameter(GAPROLE_STATE, &gap_state);
+            if (gap_state == GAPROLE_CONNECTED) {
+                GAPRole_TerminateLink(hidEmuConnHandle);
+            }
+        }
+        key_last_state = key_current;
+        
+        tmos_start_task(hidEmuTaskId, HID_USER_KEY_POLL_EVT, 160); 
+        return (events ^ HID_USER_KEY_POLL_EVT);
+    }
+
     // --- 系统消息处理 (System Messages) ---
     if(events & SYS_EVENT_MSG)
     {
@@ -299,6 +365,21 @@ static void HidEmu_MeasureBattery(void)
         Batt_SetParameter(BATT_PARAM_LEVEL, sizeof(uint8_t), &percent);
     }
 
+    // 5.如果电量低于设定阈值 (如 15%)
+    if (percent <= 15) { 
+        // 开启低电量闪烁事件 (tmos_start_task 会自动覆盖并刷新时间，不用担心重复启动)
+        tmos_start_task(hidEmuTaskId, HID_SYS_LED_BLINK_EVT, 1600 * 1);
+    } else {
+        // 电量正常，停止报警闪烁
+        tmos_stop_task(hidEmuTaskId, HID_SYS_LED_BLINK_EVT);
+        
+        // 如果目前不是开机前10秒长亮阶段，确保 SYS 灯处于熄灭状态
+        if (!is_sys_led_startup) {
+            // 【修改】高电平熄灭
+            SYS_LED_OFF();
+        }
+    }
+
     LOG_BATT("ADC:%d  V:%dmV  Pct:%d%%\n", adc_avg, (int)voltage_mv, percent);
 }
 
@@ -322,7 +403,8 @@ static void HidEmu_StateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
             if(pEvent->gap.opcode == GAP_MAKE_DISCOVERABLE_DONE_EVENT) {
                 LOG_BLE("Advertising...\n");
             }
-            LED2_OFF(); // 广播时灭灯 (省电)
+            tmos_stop_task(hidEmuTaskId, HID_BLE_LED_OFF_EVT);
+            tmos_start_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT, 1600 * 0.5);
             break;
 
         case GAPROLE_CONNECTED:
@@ -335,8 +417,11 @@ static void HidEmu_StateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
                 tmos_start_task(hidEmuTaskId, START_PARAM_UPDATE_EVT, START_PARAM_UPDATE_EVT_DELAY);
                 
                 LOG_BLE("Connected! Handle: %d\n", hidEmuConnHandle);
-                
-                LED2_ON(); // 连接成功亮灯
+
+                // 连上后：停止闪烁，点亮 BLE 灯，并开启10秒后熄灭的定时器
+                tmos_stop_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT);
+                BLE_LED_ON(); // 连上后点亮
+                tmos_start_task(hidEmuTaskId, HID_BLE_LED_OFF_EVT, 1600 * 10);
 
                 // 强制刷新电量: 重置记录并立即触发测量
                 last_batt_percent = 0; 
@@ -349,7 +434,8 @@ static void HidEmu_StateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
                 LOG_BLE("Disconnected. Reason: 0x%02x\n", pEvent->linkTerminate.reason);
             }
             
-            LED2_OFF(); // 断开灭灯
+            tmos_stop_task(hidEmuTaskId, HID_BLE_LED_OFF_EVT);
+            tmos_start_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT, 1600 * 0.5);
 
             // 自动重启广播
             {

@@ -89,30 +89,34 @@ extern "C" {
 // 4. LED 硬件抽象层 (LED HAL)
 // ============================================================
 // 统一在这里修改引脚，main.c 和 hidkbd.c 无需改动
-#define LED1_PIN   GPIO_Pin_4  // 系统电源 (System Power)
-#define LED2_PIN   GPIO_Pin_7  // 蓝牙连接 (BLE Link)
+#define SYS_LED_PIN              GPIO_Pin_12
+#define BLE_LED_PIN              GPIO_Pin_13
+#define USER_KEY_PIN             GPIO_Pin_4
+
+// --- 按键读取宏 ---
+#define READ_USER_KEY()          (GPIOB_ReadPortPin(USER_KEY_PIN) ? 1 : 0)
 
 // 硬件初始化宏 (放在 main.c 的 GPIO 初始化部分)
 #ifdef ENABLE_LED
 
-    // 控制宏 (低电平点亮)
-    #define LED_HW_INIT()  do{ \
-    GPIOB_ModeCfg(LED1_PIN | LED2_PIN, GPIO_ModeOut_PP_5mA); \
-    GPIOB_SetBits(LED1_PIN | LED2_PIN); /* 默认熄灭(高电平) */ \
-    }while(0)
-    #define LED1_ON()      GPIOB_ResetBits(LED1_PIN)
-    #define LED1_OFF()     GPIOB_SetBits(LED1_PIN)
-    #define LED2_ON()      GPIOB_ResetBits(LED2_PIN)
-    #define LED2_OFF()     GPIOB_SetBits(LED2_PIN)
+    #define SYS_LED_ON()             GPIOA_ResetBits(SYS_LED_PIN)
+    #define SYS_LED_OFF()            GPIOA_SetBits(SYS_LED_PIN)
+    #define SYS_LED_TOGGLE()         GPIOA_InverseBits(SYS_LED_PIN)
+
+    #define BLE_LED_ON()             GPIOA_ResetBits(BLE_LED_PIN)
+    #define BLE_LED_OFF()            GPIOA_SetBits(BLE_LED_PIN)
+    #define BLE_LED_TOGGLE()         GPIOA_InverseBits(BLE_LED_PIN)
 
 #else
 
     // 如果禁用 LED，所有操作替换为空，连 GPIO 都不配置，彻底省电
-    #define LED_HW_INIT()  do{}while(0) 
-    #define LED1_ON()      do{}while(0)
-    #define LED1_OFF()     do{}while(0)
-    #define LED2_ON()      do{}while(0)
-    #define LED2_OFF()     do{}while(0)
+    #define SYS_LED_ON()             do{}while(0)
+    #define SYS_LED_OFF()            do{}while(0)
+    #define SYS_LED_TOGGLE()         do{}while(0)
+
+    #define BLE_LED_ON()             do{}while(0)
+    #define BLE_LED_OFF()            do{}while(0)
+    #define BLE_LED_TOGGLE()         do{}while(0)
 
 #endif
 

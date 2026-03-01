@@ -31,6 +31,11 @@ extern "C" {
 #define START_PARAM_UPDATE_EVT    0x0004
 #define START_PHY_UPDATE_EVT      0x0008
 #define START_BATT_READ_EVT       0x0010
+#define HID_SYS_LED_OFF_EVT       0x0100
+#define HID_SYS_LED_BLINK_EVT     0x0200
+#define HID_BLE_LED_OFF_EVT       0x0400
+#define HID_BLE_LED_BLINK_EVT     0x0800
+#define HID_USER_KEY_POLL_EVT     0x1000
 
 /*********************************************************************
  * MACROS

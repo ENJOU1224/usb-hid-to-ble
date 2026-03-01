@@ -137,7 +137,8 @@
 							"DCDC_ENABLE=1",
 							"ENABLE_WATCHDOG=1",
 							"DEBUG=1",
-							"DEBUG_BATT=1"
+							"DEBUG_BATT=1",
+							"ENABLE_LED=1"
 						],
 						"undefined_symbols": []
 					},
