@@ -320,47 +320,28 @@ uint16_t HidEmu_ProcessEvent(uint8_t task_id, uint16_t events)
         return (events ^ START_PHY_UPDATE_EVT);
     }
     
-    // [休眠超时] 5分钟无按键，进入软休眠
+    // [休眠超时] 5分钟无按键，进入软休眠 (仅关闭蓝牙，保持 USB 监听)
     if (events & HID_SLEEP_TIMEOUT_EVT) {
         is_ble_sleeping = TRUE;
         
-        // 1. 如果当前处于连接状态，主动断开连接
+        // 1. 关闭蓝牙广播，省下射频功耗
+        uint8_t adv_en = FALSE;
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_en);
+        
+        // 2. 关掉所有的指示灯
+        SYS_LED_OFF();
+        BLE_LED_OFF();
+        tmos_stop_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT);
+        
+        // 3. 断开当前蓝牙连接
         uint8_t gap_state;
         GAPRole_GetParameter(GAPROLE_STATE, &gap_state);
         if (gap_state == GAPROLE_CONNECTED) {
-            GAPRole_TerminateLink(hidEmuConnHandle);
+            GAPRole_TerminateLink(hidEmuConnHandle); 
         }
-        
-        // 2. 关闭蓝牙广播 (关闭射频发射，大幅省电)
-        uint8_t initial_advert_enable = FALSE;
-        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advert_enable);
-        
-        // 3. 关闭所有指示灯以省电
-        SYS_LED_OFF();
-        BLE_LED_OFF();
-        // 停止之前的闪烁任务
-        tmos_stop_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT);
-        tmos_stop_task(hidEmuTaskId, HID_SYS_LED_BLINK_EVT);
-        
-        // ==========================================
-        // 【阶段二新增】：执行 USB 挂起与系统深度休眠
-        // ==========================================
-        is_usb_suspended = 1; // 锁定读取逻辑
-        
-        // a) 停止向 USB 键盘发送 SOF 包
-        R8_U2HOST_CTRL &= ~RB_UH_SOF_EN;
-        
-        // b) 清除可能遗留的总线检测标志位
-        R8_USB2_INT_FG = RB_UIF_DETECT;
-        
-        // c) 开启 USB 总线检测中断
-        R8_USB2_INT_EN |= RB_UIE_DETECT;
-        
-        // d) 在中断控制器中使能 USB2 的中断优先级
-        PFIC_EnableIRQ(USB2_IRQn); 
 
-        // 【最核心的修复】：解锁 SAM 寄存器写保护并写入唤醒配置
-        PWR_PeriphWakeUpCfg(ENABLE, RB_SLP_USB2_WAKE, Long_Delay);
+        // 注意：这里【绝对不再操作】任何 USB 挂起、总线中断或 PMU 的代码了！
+        // 让 TMOS 系统在没有蓝牙任务时，自动进入浅睡眠 (Idle)，并自动维持 USB 的轮询。
 
         return (events ^ HID_SLEEP_TIMEOUT_EVT);
     }
