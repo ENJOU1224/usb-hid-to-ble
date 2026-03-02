@@ -36,6 +36,7 @@ extern "C" {
 #define HID_BLE_LED_OFF_EVT       0x0400
 #define HID_BLE_LED_BLINK_EVT     0x0800
 #define HID_USER_KEY_POLL_EVT     0x1000
+#define HID_SLEEP_TIMEOUT_EVT     0x2000
 
 /*********************************************************************
  * MACROS
@@ -58,6 +59,7 @@ extern void HidEmu_Init(void);
  * Task Event Processor for the BLE Application
  */
 extern uint16_t HidEmu_ProcessEvent(uint8_t task_id, uint16_t events);
+extern uint8_t HidEmu_ResetIdleTimer(void);
 
 /*********************************************************************
 *********************************************************************/

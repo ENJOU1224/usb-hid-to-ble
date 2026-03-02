@@ -80,12 +80,17 @@ static hidDevCfg_t hidEmuCfg = {
 static uint8_t  hidEmuTaskId = INVALID_TASK_ID;     // TMOS 任务ID
 static uint16_t hidEmuConnHandle = GAP_CONNHANDLE_INIT; // 连接句柄
 
-// --- 电池相关 ---
-static uint8_t      last_batt_percent = 0;          // 上次上报的电量
-static signed short ADC_RoughCalib_Value = 0;       // ADC 校准偏移值
+static uint8_t is_ble_sleeping = FALSE; // 记录当前是否处于休眠(蓝牙关闭)状态
+#define SLEEP_TIMEOUT_TIME       (1600 * 60 / 5) // 5分钟 (1600个tick = 1秒)
+
+extern volatile uint8_t is_usb_suspended;
 
 // 记录SYS灯是否还在上电前10秒的长亮状态
 static uint8_t is_sys_led_startup = TRUE;
+
+// --- 电池相关 ---
+static uint8_t      last_batt_percent = 0;          // 上次上报的电量
+static signed short ADC_RoughCalib_Value = 0;       // ADC 校准偏移值
 
 // --- 放电曲线表 (mV -> %) ---
 // 线性插值查表法，更符合锂电池放电特性
@@ -113,6 +118,7 @@ static const BattMap batt_table[] = {
     
     {0,           0}   // 结束符，用于算法边界保护
 };
+
 
 // ===================================================================
 // ? 内部函数声明
@@ -198,6 +204,8 @@ void HidEmu_Init()
     // 5. 启动设备主事件
     tmos_set_event(hidEmuTaskId, START_DEVICE_EVT);
     
+    // 开启初始的 5 分钟不活动倒计时
+    tmos_start_task(hidEmuTaskId, HID_SLEEP_TIMEOUT_EVT, SLEEP_TIMEOUT_TIME);
 }
 
 // ===================================================================
@@ -243,7 +251,20 @@ uint16_t HidEmu_ProcessEvent(uint8_t task_id, uint16_t events)
             uint8_t gap_state;
             GAPRole_GetParameter(GAPROLE_STATE, &gap_state);
             if (gap_state == GAPROLE_CONNECTED) {
-                GAPRole_TerminateLink(hidEmuConnHandle);
+                
+                is_ble_sleeping = TRUE; // 【新增】告诉系统我们主动进入休眠了
+                
+                // 主动关闭广播，防止没连上的情况下还在一直发
+                uint8_t adv_en = FALSE;
+                GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_en);
+                
+                // 关掉指示灯
+                SYS_LED_OFF();
+                BLE_LED_OFF();
+                tmos_stop_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT);
+                
+                // 断开连接
+                GAPRole_TerminateLink(hidEmuConnHandle); 
             }
         }
         key_last_state = key_current;
@@ -299,6 +320,51 @@ uint16_t HidEmu_ProcessEvent(uint8_t task_id, uint16_t events)
         return (events ^ START_PHY_UPDATE_EVT);
     }
     
+    // [休眠超时] 5分钟无按键，进入软休眠
+    if (events & HID_SLEEP_TIMEOUT_EVT) {
+        is_ble_sleeping = TRUE;
+        
+        // 1. 如果当前处于连接状态，主动断开连接
+        uint8_t gap_state;
+        GAPRole_GetParameter(GAPROLE_STATE, &gap_state);
+        if (gap_state == GAPROLE_CONNECTED) {
+            GAPRole_TerminateLink(hidEmuConnHandle);
+        }
+        
+        // 2. 关闭蓝牙广播 (关闭射频发射，大幅省电)
+        uint8_t initial_advert_enable = FALSE;
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advert_enable);
+        
+        // 3. 关闭所有指示灯以省电
+        SYS_LED_OFF();
+        BLE_LED_OFF();
+        // 停止之前的闪烁任务
+        tmos_stop_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT);
+        tmos_stop_task(hidEmuTaskId, HID_SYS_LED_BLINK_EVT);
+        
+        // ==========================================
+        // 【阶段二新增】：执行 USB 挂起与系统深度休眠
+        // ==========================================
+        is_usb_suspended = 1; // 锁定读取逻辑
+        
+        // a) 停止向 USB 键盘发送 SOF 包
+        R8_U2HOST_CTRL &= ~RB_UH_SOF_EN;
+        
+        // b) 清除可能遗留的总线检测标志位
+        R8_USB2_INT_FG = RB_UIF_DETECT;
+        
+        // c) 开启 USB 总线检测中断
+        R8_USB2_INT_EN |= RB_UIE_DETECT;
+        
+        // d) 在中断控制器中使能 USB2 的中断优先级
+        PFIC_EnableIRQ(USB2_IRQn); 
+
+        // 【最核心的修复】：解锁 SAM 寄存器写保护并写入唤醒配置
+        PWR_PeriphWakeUpCfg(ENABLE, RB_SLP_USB2_WAKE, Long_Delay);
+
+        return (events ^ HID_SLEEP_TIMEOUT_EVT);
+    }
+
     return 0;
 }
 
@@ -435,12 +501,13 @@ static void HidEmu_StateCB(gapRole_States_t newState, gapRoleEvent_t *pEvent)
             }
             
             tmos_stop_task(hidEmuTaskId, HID_BLE_LED_OFF_EVT);
-            tmos_start_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT, 1600 * 0.5);
+            
 
-            // 自动重启广播
-            {
+            // 【关键修改】：如果处于休眠状态，千万不要重新开启广播！
+            if (!is_ble_sleeping) {
                 uint8_t adv_enable = TRUE;
                 GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &adv_enable);
+                tmos_start_task(hidEmuTaskId, HID_BLE_LED_BLINK_EVT, 1600 * 0.5);
             }
             break;
 
@@ -508,4 +575,24 @@ uint8_t HidEmu_SendUSBReport(uint8_t *pData)
 uint8_t HidEmu_SendMouseReport(uint8_t *pData)
 {
     return HidDev_Report(HID_RPT_ID_MOUSE_IN, HID_REPORT_TYPE_INPUT, 4, pData);
+}
+
+// 重置休眠倒计时
+uint8_t HidEmu_ResetIdleTimer(void){
+    uint8_t just_wake = FALSE; // 记录是否刚从休眠唤醒
+    
+    if (is_ble_sleeping) {
+        is_ble_sleeping = FALSE;
+        just_wake = TRUE;
+        
+        // 重新开启蓝牙广播
+        uint8_t initial_advert_enable = TRUE;
+        GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advert_enable);
+        
+        SYS_LED_ON();
+        tmos_start_task(hidEmuTaskId, HID_SYS_LED_OFF_EVT, 1600 * 1);
+    }
+
+    tmos_start_task(hidEmuTaskId, HID_SLEEP_TIMEOUT_EVT, SLEEP_TIMEOUT_TIME);
+    return just_wake; // 返回唤醒状态
 }

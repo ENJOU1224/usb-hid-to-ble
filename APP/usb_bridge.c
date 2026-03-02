@@ -10,6 +10,7 @@
 #include "CH58xBLE_LIB.H"
 #include "CH58x_common.h"
 #include "debug.h"
+#include "hidkbd.h"
 
 // ===================================================================
 // ? 用户配置区 (User Configuration)
@@ -37,6 +38,9 @@ static uint8_t  kbd_send_pending = 0;     // 键盘流控重发标志
 // --- 鼠标状态 ---
 static uint8_t  last_mouse_report[4] = {0}; // 鼠标上次数据(去重用)
 
+// 记录当前 USB 是否处于挂起状态
+volatile uint8_t is_usb_suspended = 0;
+
 // [优化] NiZ 鼠标专用同步记录变量
 // 格式说明：Bit7=同步位(0=DATA0, 1=DATA1), Bit0-6=端点号
 // 初始化为 0x04 (即端点4, 期望DATA0)
@@ -52,12 +56,43 @@ extern uint8_t AnalyzeRootU2Hub(void);
 extern uint8_t EnumAllU2HubPort(void);
 extern uint16_t U2SearchTypeDevice(uint8_t type);
 extern void SelectU2HubPort(uint8_t hub_port);
+extern uint8_t HidEmu_ResetIdleTimer(void);
 
 
 // ===================================================================
 // ?? 辅助函数：数据解析与调试
 // ===================================================================
 
+// =================================================================
+// USB2 中断服务函数 (处理键盘的物理敲击唤醒)
+// =================================================================
+__attribute__((interrupt("WCH-Interrupt-fast")))
+__attribute__((section(".highcode")))
+void USB2_IRQHandler(void)
+{
+    // 【硬件唤醒指示灯】：只要进中断，第一时间点亮 SYS 灯！
+    // 如果休眠时按下键盘这个灯亮了，说明唤醒通道 100% 成功了。
+    SYS_LED_ON();
+    
+    // 检查是否是 USB 设备检测中断 (设备端拉动 D+/D- 产生的 Resume 唤醒信号也会触发此中断)
+    if (R8_USB2_INT_FG & RB_UIF_DETECT)
+    {
+        // 1. 清除唤醒/检测中断标志
+        R8_USB2_INT_FG = RB_UIF_DETECT;
+        
+        // 2. 关闭唤醒中断，防止重复触发
+        R8_USB2_INT_EN &= ~RB_UIE_DETECT;
+        
+        // 3. 恢复发送 SOF 心跳包，正式唤醒键盘 (键盘灯会重新亮起)
+        R8_U2HOST_CTRL |= RB_UH_SOF_EN;
+        
+        // 4. 解除程序的 USB 挂起锁定
+        is_usb_suspended = 0;
+        
+        // 5. 唤醒蓝牙 (调用阶段一写好的函数)
+        HidEmu_ResetIdleTimer();
+    }
+}
 
 
 /**
@@ -176,44 +211,59 @@ void USB_Bridge_Poll(void) {
     // =================================================================
     // [任务 2] 读取键盘数据
     // =================================================================
-    search_res = U2SearchTypeDevice(DEV_TYPE_KEYBOARD);
-    if(search_res != 0xFFFF)
+    // 【修改】：只有在非挂起状态下，才去读取 USB 数据
+    if (!is_usb_suspended) 
     {
-        uint8_t dev_addr = (uint8_t)(search_res >> 8); // HUB端口号
-        len = (uint8_t)search_res;                     // 接口号
-        SelectU2HubPort(len); 
-        
-        // 获取官方库维护的端点记录
-        endp_addr = len ? DevOnU2HubPort[len - 1].GpVar[0] : ThisUsb2Dev.GpVar[0];
-
-        // 只有端点有效才通讯
-        if(endp_addr & USB_ENDP_ADDR_MASK)
+        search_res = U2SearchTypeDevice(DEV_TYPE_KEYBOARD);
+        if(search_res != 0xFFFF)
         {
-            // 执行 IN 事务
-            // 根据端点变量的 Bit7 自动决定是发 DATA0 还是 DATA1
-            s = USB2HostTransact(USB_PID_IN << 4 | (endp_addr & 0x7F), 
-                                 (endp_addr & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0, 0);
+            uint8_t dev_addr = (uint8_t)(search_res >> 8); // HUB端口号
+            len = (uint8_t)search_res;                     // 接口号
+            SelectU2HubPort(len); 
+            
+            // 获取官方库维护的端点记录
+            endp_addr = len ? DevOnU2HubPort[len - 1].GpVar[0] : ThisUsb2Dev.GpVar[0];
 
-            if(s == ERR_SUCCESS)
+            // 只有端点有效才通讯
+            if(endp_addr & USB_ENDP_ADDR_MASK)
             {
-                // 成功后翻转同步位 (Bit7)
-                endp_addr ^= 0x80;
-                // 写回官方库结构体
-                if(len) DevOnU2HubPort[len - 1].GpVar[0] = endp_addr;
-                else    ThisUsb2Dev.GpVar[0] = endp_addr;
+                // 执行 IN 事务
+                // 根据端点变量的 Bit7 自动决定是发 DATA0 还是 DATA1
+                s = USB2HostTransact(USB_PID_IN << 4 | (endp_addr & 0x7F), 
+                                    (endp_addr & 0x80) ? (RB_UH_R_TOG | RB_UH_T_TOG) : 0, 0);
 
-                len = R8_USB2_RX_LEN;
-                if(len > 0) 
+                if(s == ERR_SUCCESS)
                 {
-                    uint8_t temp_report[8] = {0};
-                    Parse_Keyboard_Data(RxBuffer, len, temp_report);
-                    DBG_KEYS(temp_report);
-                    
-                    memcpy(last_kbd_report, temp_report, 8);
-                    
-                    // 发送给蓝牙
-                    if (HidEmu_SendUSBReport(last_kbd_report) != SUCCESS) {
-                        kbd_send_pending = 1; // 标记待重发
+                    // 成功后翻转同步位 (Bit7)
+                    endp_addr ^= 0x80;
+                    // 写回官方库结构体
+                    if(len) DevOnU2HubPort[len - 1].GpVar[0] = endp_addr;
+                    else    ThisUsb2Dev.GpVar[0] = endp_addr;
+
+                    len = R8_USB2_RX_LEN;
+                    if(len > 0) 
+                    {
+                        uint8_t temp_report[8] = {0};
+                        Parse_Keyboard_Data(RxBuffer, len, temp_report);
+                        
+                        // 【优化1】加上 memcmp：只有键盘数据发生真实变化（按下或松开）才处理
+                        if (memcmp(last_kbd_report, temp_report, 8) != 0) 
+                        {
+                            DBG_KEYS(temp_report);
+                            memcpy(last_kbd_report, temp_report, 8);
+                            
+                            // 【优化2】处理唤醒逻辑
+                            if (HidEmu_ResetIdleTimer() == TRUE) {
+                                // 如果是刚刚被敲击唤醒：丢弃这一次按键数据！
+                                // （作为代价，唤醒键不会出现在电脑屏幕上，但这能彻底解决卡死粘键的问题）
+                                kbd_send_pending = 0; 
+                            } else {
+                                // 正常非休眠状态：发送给蓝牙
+                                if (HidEmu_SendUSBReport(last_kbd_report) != SUCCESS) {
+                                    kbd_send_pending = 1; // 标记待重发
+                                }
+                            }
+                        }
                     }
                 }
             }
