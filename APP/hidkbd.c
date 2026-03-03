@@ -83,7 +83,7 @@ static uint16_t hidEmuConnHandle = GAP_CONNHANDLE_INIT; // 连接句柄
 static uint8_t is_ble_sleeping = FALSE; // 记录当前是否处于休眠(蓝牙关闭)状态
 #define SLEEP_TIMEOUT_TIME       (1600 * 60 / 5) // 5分钟 (1600个tick = 1秒)
 
-extern volatile uint8_t is_usb_suspended;
+uint8_t is_usb_idle = FALSE; // 【新增】USB 30秒空闲标志
 
 // 记录SYS灯是否还在上电前10秒的长亮状态
 static uint8_t is_sys_led_startup = TRUE;
@@ -158,7 +158,7 @@ void HidEmu_Init()
     // 4. 启动按键轮询
     tmos_start_task(hidEmuTaskId, HID_USER_KEY_POLL_EVT, 160);
 
-    // 1. GAP 广播与通用配置
+    // 5. GAP 广播与通用配置
     {
         uint8_t initial_advertising_enable = TRUE;
         GAPRole_SetParameter(GAPROLE_ADVERT_ENABLED, sizeof(uint8_t), &initial_advertising_enable);
@@ -167,7 +167,7 @@ void HidEmu_Init()
     }
     GGS_SetParameter(GGS_DEVICE_NAME_ATT, sizeof(attDeviceName), (void *)attDeviceName);
 
-    // 2. 安全与配对配置 (Bond Manager)
+    // 6. 安全与配对配置 (Bond Manager)
     {
         uint32_t passkey = DEFAULT_PASSCODE;
         uint8_t  pairMode = DEFAULT_PAIRING_MODE;
@@ -182,7 +182,7 @@ void HidEmu_Init()
         GAPBondMgr_SetParameter(GAPBOND_PERI_BONDING_ENABLED, sizeof(uint8_t), &bonding);
     }
 
-    // 3. 注册 GATT 服务
+    // 7. 注册 GATT 服务
     {
         uint8_t critical = DEFAULT_BATT_CRITICAL_LEVEL;
         Batt_SetParameter(BATT_PARAM_CRITICAL_LEVEL, sizeof(uint8_t), &critical); // 电池服务
@@ -190,7 +190,7 @@ void HidEmu_Init()
         HidDev_Register(&hidEmuCfg, &hidEmuHidCBs); // 注册 HID 回调
     }
 
-    // 4. ADC 硬件初始化 (用于电量检测)
+    // 8. ADC 硬件初始化 (用于电量检测)
     {
         GPIOA_ModeCfg(BATT_ADC_PIN, GPIO_ModeIN_Floating);
         ADC_ExtSingleChSampInit(SampleFreq_3_2, ADC_PGA_1_2); // PGA=1/2, 满量程约 2.1V 或 6.3V(取决于VRef)
@@ -201,11 +201,18 @@ void HidEmu_Init()
         tmos_start_task(hidEmuTaskId, START_BATT_READ_EVT, BATT_BOOT_DELAY);
     }
 
-    // 5. 启动设备主事件
+    // 9. 启动设备主事件
     tmos_set_event(hidEmuTaskId, START_DEVICE_EVT);
+
+    // 10. 启动 USB 桥接的 TMOS 轮询任务
+    // 初始状态下正常工作，2 ticks (~1.25 毫秒) 跑一次
+    tmos_start_task(hidEmuTaskId, HID_USB_POLL_EVT, 2);
     
-    // 开启初始的 5 分钟不活动倒计时
+    // 11. 开启初始的 5 分钟不活动倒计时
     tmos_start_task(hidEmuTaskId, HID_SLEEP_TIMEOUT_EVT, SLEEP_TIMEOUT_TIME);
+
+    // 12. 上电时，启动第一轮 30 秒的空闲倒计时
+    tmos_start_task(hidEmuTaskId, HID_USB_IDLE_EVT, 1600 * 30);
 }
 
 // ===================================================================
@@ -340,10 +347,43 @@ uint16_t HidEmu_ProcessEvent(uint8_t task_id, uint16_t events)
             GAPRole_TerminateLink(hidEmuConnHandle); 
         }
 
-        // 注意：这里【绝对不再操作】任何 USB 挂起、总线中断或 PMU 的代码了！
-        // 让 TMOS 系统在没有蓝牙任务时，自动进入浅睡眠 (Idle)，并自动维持 USB 的轮询。
-
         return (events ^ HID_SLEEP_TIMEOUT_EVT);
+    }
+
+    // =======================================================
+    // [任务] USB 动态轮询与软休眠管理
+    // =======================================================
+    if (events & HID_USB_POLL_EVT) {
+        // 1. 执行一次真实的底层 USB 读取
+        extern void USB_Bridge_Poll(void);
+        USB_Bridge_Poll();
+        
+        // 2. 动态调度 (三级电源管理)
+        if (is_ble_sleeping) {
+            // 第三级：5分钟无输入，断开蓝牙。
+            // 此时可以睡得更深，直接降到 500ms 轮询一次 (500 * 1.6 = 800 ticks)
+            tmos_start_task(hidEmuTaskId, HID_USB_POLL_EVT, 800); 
+
+        } else if (is_usb_idle) {
+            // 第二级：30秒无输入，蓝牙保持连接。
+            // 降级到 50ms 轮询一次 (50 * 1.6 = 80 ticks)
+            tmos_start_task(hidEmuTaskId, HID_USB_POLL_EVT, 80);
+
+        } else {
+            // 第一级：正在打字状态。
+            // 保持全速轮询 (~1.25 毫秒一次)
+            tmos_start_task(hidEmuTaskId, HID_USB_POLL_EVT, 2);
+        }
+        
+        return (events ^ HID_USB_POLL_EVT);
+    }
+
+    // =======================================================
+    // [任务] 30秒无按键输入，进入 USB 半休眠降频状态
+    // =======================================================
+    if (events & HID_USB_IDLE_EVT) {
+        is_usb_idle = TRUE;
+        return (events ^ HID_USB_IDLE_EVT);
     }
 
     return 0;
@@ -562,6 +602,7 @@ uint8_t HidEmu_SendMouseReport(uint8_t *pData)
 uint8_t HidEmu_ResetIdleTimer(void){
     uint8_t just_wake = FALSE; // 记录是否刚从休眠唤醒
     
+    // 1. 如果在最深度的 5 分钟软休眠中，唤醒蓝牙
     if (is_ble_sleeping) {
         is_ble_sleeping = FALSE;
         just_wake = TRUE;
@@ -574,6 +615,15 @@ uint8_t HidEmu_ResetIdleTimer(void){
         tmos_start_task(hidEmuTaskId, HID_SYS_LED_OFF_EVT, 1600 * 1);
     }
 
+    // 2. 刷新 5 分钟软休眠的定时器
     tmos_start_task(hidEmuTaskId, HID_SLEEP_TIMEOUT_EVT, SLEEP_TIMEOUT_TIME);
+
+    // 3. 【新增】：刷新 30 秒的 USB 降频定时器，并清除空闲标志
+    is_usb_idle = FALSE;
+    tmos_start_task(hidEmuTaskId, HID_USB_IDLE_EVT, 1600 * 30); // 30秒
+
+    // 4. 【新增】：只要有按键，立刻把 USB 轮询速度拉满！
+    // 覆盖之前慢速的轮询事件，瞬间切回 1.25ms (2 ticks) 全速响应
+    tmos_start_task(hidEmuTaskId, HID_USB_POLL_EVT, 2);
     return just_wake; // 返回唤醒状态
 }

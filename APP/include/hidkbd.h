@@ -37,6 +37,8 @@ extern "C" {
 #define HID_BLE_LED_BLINK_EVT     0x0800
 #define HID_USER_KEY_POLL_EVT     0x1000
 #define HID_SLEEP_TIMEOUT_EVT     0x2000
+#define HID_USB_POLL_EVT          0x4000
+#define HID_USB_IDLE_EVT          0x8000
 
 /*********************************************************************
  * MACROS
