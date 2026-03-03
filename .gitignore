@@ -5,5 +5,7 @@
 !/SRC/
 !/LIB/
 !/Profile/
+!/Hardware/
+!/Enclosure/
 !HID_Keyboard.wvproj
 !README.md
