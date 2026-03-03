@@ -36,12 +36,13 @@ static uint8_t  last_kbd_report[8] = {0}; // 键盘上次数据(去重用)
 static uint8_t  kbd_send_pending = 0;     // 键盘流控重发标志
 
 // --- 鼠标状态 ---
-static uint8_t  last_mouse_report[4] = {0}; // 鼠标上次数据(去重用)
+static uint8_t  last_mouse_report[4] = {0};     // 鼠标上次数据 (去重用)
+static uint8_t  mouse_send_pending = 0;          // 鼠标流控：有待发帧
+static uint8_t  pending_mouse_report[4] = {0};  // 待发帧缓存（最新帧覆写）
 
-// [优化] NiZ 鼠标专用同步记录变量
-// 格式说明：Bit7=同步位(0=DATA0, 1=DATA1), Bit0-6=端点号
-// 初始化为 0x04 (即端点4, 期望DATA0)
-static uint8_t  Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F); 
+// NiZ 鼠标专用同步记录变量
+// Bit7=同步位(0=DATA0, 1=DATA1), Bit0-6=端点号，初始期望 DATA0
+static uint8_t  Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F);
 
 // ===================================================================
 // ? 外部函数引用
@@ -109,38 +110,49 @@ void USB_Bridge_Init(void) {
     // 1. 硬件 IO 初始化 (开启 USB 供电)
     GPIOA_SetBits(GPIO_Pin_9);
     GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA);
-    
+
     // 2. 绑定 USB RAM
     pU2HOST_RX_RAM_Addr = RxBuffer;
     pU2HOST_TX_RAM_Addr = TxBuffer;
-    
+
     // 3. 初始化协议栈
     USB2_HostInit();
-    
-    Bridge_NewDevFlag = 0;
-    kbd_send_pending = 0;
-    
-    // 初始化 NiZ 记录变量 (清除 DATA1 标志，只保留端点号)
+
+    Bridge_NewDevFlag  = 0;
+    kbd_send_pending   = 0;
+    mouse_send_pending = 0;
+
+    // 初始化 NiZ 记录变量（清除 DATA1 标志，只保留端点号）
     Var_NizMouse_Record = (NIZ_MOUSE_ENDP & 0x7F);
-    
+
     LOG_SYS("USB Init OK. Bridge Ready.\n");
 }
 
 void USB_Bridge_Poll(void) {
     uint8_t s, len, endp_addr;
     uint16_t search_res;
-    
+
     // --------------------------------------------------------
-    // [任务 0] 键盘流控处理
-    // 如果上次发送失败（蓝牙忙），优先重试，保证按键不丢失
+    // [任务 0a] 键盘流控：蓝牙忙时优先重发，保证不丢键
     // --------------------------------------------------------
     if (kbd_send_pending) {
         if (HidEmu_SendUSBReport(last_kbd_report) == SUCCESS) {
-            kbd_send_pending = 0; // 发送成功，清除标志
+            kbd_send_pending = 0;
             LOG_BLE("KBD Resend OK\n");
         } else {
-            return; // 依然忙，暂停本轮处理
+            return; // 蓝牙仍忙，暂停本轮
         }
+    }
+
+    // --------------------------------------------------------
+    // [任务 0b] 鼠标流控：发送上帧缓存的最新鼠标数据
+    //           与键盘不同，鼠标不阻塞本轮轮询（保实时性）
+    // --------------------------------------------------------
+    if (mouse_send_pending) {
+        if (HidEmu_SendMouseReport(pending_mouse_report) == SUCCESS) {
+            mouse_send_pending = 0;
+        }
+        // 发送失败继续持有缓存，下一轮再试；本轮继续读新数据
     }
 
     // --------------------------------------------------------
@@ -306,9 +318,14 @@ void USB_Bridge_Poll(void) {
 
                     // --- 发送处理 ---
                     DBG_MOUSE(mouse_data);
-                    
-                    // 鼠标数据量大，不需要重发机制，蓝牙忙则丢弃以保证实时性
-                    HidEmu_SendMouseReport(mouse_data);
+
+                    // 蓝牙忙时用最新帧覆写缓存，下一轮优先重发
+                    if (HidEmu_SendMouseReport(mouse_data) != SUCCESS) {
+                        memcpy(pending_mouse_report, mouse_data, 4);
+                        mouse_send_pending = 1;  // 触发缓存重发
+                    } else {
+                        mouse_send_pending = 0;  // 成功发出，清除旧缓存
+                    }
                 }
             }
         }

@@ -49,7 +49,7 @@ extern "C" {
 #define TIME_USB_POLL_SLEEP       800UL   // USB 休眠轮询: 500ms
 
 // --- 电源管理 ---
-#define TIME_SLEEP_TIMEOUT        (TICKS_PER_SEC * 60 / 5)  // 软休眠超时: 5分钟
+#define TIME_SLEEP_TIMEOUT        (TICKS_PER_SEC * 60 * 10)  // 软休眠超时: 10分钟
 #define TIME_USB_IDLE             (TICKS_PER_SEC * 30)       // USB 空闲降频: 30秒
 
 // --- 电量检测 ---
