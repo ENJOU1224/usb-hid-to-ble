@@ -1,4 +1,5 @@
-#include "CH58x_common.h" // 确保能找到 PRINT 定义
+#include "CH58x_common.h"
+
 #ifdef DEBUG_KEY
 static const char* key_names[] = {
     [0x00] = NULL, [0x04]="a", [0x05]="b", [0x06]="c", [0x07]="d", [0x08]="e",
@@ -30,11 +31,11 @@ void Show_Current_Keys(uint8_t *report) {
     for (int i = 2; i < 8; i++) {
         uint8_t code = report[i];
         if (code != 0 && code < sizeof(key_names)/sizeof(char*)) {
-            if(key_names[code]) { 
-                if(has_print) PRINT("+ ");
-                PRINT("%s ", key_names[code]); 
+            if (key_names[code]) {
+                if (has_print) PRINT("+ ");
+                PRINT("%s ", key_names[code]);
             } else {
-                if(has_print) PRINT("+ ");
+                if (has_print) PRINT("+ ");
                 PRINT("[%02X] ", code);
             }
             has_print = 1;
@@ -43,30 +44,28 @@ void Show_Current_Keys(uint8_t *report) {
     if (!has_print) PRINT("(All Released)");
     PRINT("\n");
 }
-#endif
+#endif /* DEBUG_KEY */
 
 #ifdef DEBUG_MOUSE
 /**
- * @brief  调试打印：显示原始鼠标数据
+ * @brief 调试打印：显示原始鼠标数据
  */
 void Show_Raw_Mouse(uint8_t *buf, uint8_t len) {
-    #if (defined(DEBUG_MOUSE) && DEBUG_MOUSE == 1)
     PRINT("RAW [%d]: ", len);
-    for(int i=0; i<len; i++) PRINT("%02X ", buf[i]);
+    for (int i = 0; i < len; i++) PRINT("%02X ", buf[i]);
     PRINT("\n");
-    #endif
 }
 
 /**
- * @brief  调试打印：显示鼠标坐标和按键
+ * @brief 调试打印：显示鼠标坐标和按键
  */
 void Show_Current_Mouse(uint8_t *report) {
     PRINT("MOUSE: ");
     if (report[0] & 0x01) PRINT("[L] ");
     if (report[0] & 0x02) PRINT("[R] ");
     if (report[0] & 0x04) PRINT("[M] ");
-    int8_t x=(int8_t)report[1], y=(int8_t)report[2], w=(int8_t)report[3];
-    if (x!=0 || y!=0 || w!=0) PRINT("X:%d Y:%d W:%d", x, y, w);
+    int8_t x = (int8_t)report[1], y = (int8_t)report[2], w = (int8_t)report[3];
+    if (x != 0 || y != 0 || w != 0) PRINT("X:%d Y:%d W:%d", x, y, w);
     PRINT("\n");
 }
-#endif
+#endif /* DEBUG_MOUSE */
